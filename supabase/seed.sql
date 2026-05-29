@@ -19,6 +19,9 @@ CREATE TABLE places (
   lat DOUBLE PRECISION NOT NULL,
   lng DOUBLE PRECISION NOT NULL,
   google_place_id TEXT,
+  photo_url TEXT,
+  rating DOUBLE PRECISION,
+  user_ratings_total INTEGER,
   ai_suggested BOOLEAN DEFAULT FALSE,
   status TEXT DEFAULT 'proposed' CHECK (status IN ('proposed', 'approved', 'rejected'))
 );

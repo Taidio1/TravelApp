@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import Card from './Card';
 import Button from './Button';
@@ -26,8 +26,8 @@ const Auth: React.FC = () => {
     <div className="flex flex-col items-center justify-center min-h-[80vh] w-full p-4">
       <Card className="w-full max-w-md flex flex-col gap-6">
         <div className="text-center">
-          <h2 className="text-3xl font-bold text-gray-800">SpainTrip 2026</h2>
-          <p className="text-gray-500 mt-2">Sign in to start exploring</p>
+          <h2 className="text-3xl font-bold text-gray-800 dark:text-gray-100">SpainTrip 2026</h2>
+          <p className="text-gray-500 dark:text-gray-400 mt-2">Sign in to start exploring</p>
         </div>
 
         <form onSubmit={handleAuth} className="flex flex-col gap-4">

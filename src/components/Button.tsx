@@ -17,7 +17,7 @@ const Button: React.FC<ButtonProps> = ({
   const variants = {
     primary: "bg-spanish-orange text-white shadow-neu-flat",
     secondary: "bg-spanish-red text-white shadow-neu-flat",
-    neutral: "bg-spanish-bg text-gray-700 shadow-neu-flat"
+    neutral: "bg-spanish-bg text-gray-700 dark:text-gray-200 shadow-neu-flat"
   };
 
   const sizes = {

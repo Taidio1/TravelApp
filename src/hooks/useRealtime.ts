@@ -7,7 +7,7 @@ export function useRealtime<T extends { id: string }>(table: string) {
   useEffect(() => {
     // Initial fetch
     const fetchData = async () => {
-      const { data: initialData, error } = await supabase
+      const { data: initialData } = await supabase
         .from(table)
         .select('*');
       
