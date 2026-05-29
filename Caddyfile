@@ -6,7 +6,9 @@
 	auto_https disable_redirects
 }
 
-zwiedzamtu.pl {
+# Replace travel.tojest.dev with your real mikr.us subdomain. Its DNS A record
+# must point to this VPS's IP, or Caddy will keep retrying the certificate.
+zwiedzamtu.pl, travel.tojest.dev {
 	root * /srv
 	encode zstd gzip
 
@@ -21,4 +23,14 @@ zwiedzamtu.pl {
 			disable_http_challenge
 		}
 	}
+}
+
+# Plain HTTP for the mikr.us "Cytrus" subdomain proxy. Cytrus terminates
+# HTTPS on its side and forwards to this internal port — no cert here.
+# Has no hostname, so Caddy serves any Host and skips auto-HTTPS.
+:8080 {
+	root * /srv
+	encode zstd gzip
+	try_files {path} /index.html
+	file_server
 }

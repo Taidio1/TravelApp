@@ -8,6 +8,8 @@ services:
       # Only 443 — port 80 stays with verum. UDP 443 enables HTTP/3.
       - "443:443"
       - "443:443/udp"
+      # Plain HTTP for the mikr.us Cytrus subdomain proxy (point Cytrus here).
+      - "8080:8080"
     volumes:
       # Persist Let's Encrypt certs/config across restarts (rate limits!).
       - caddy_data:/data
