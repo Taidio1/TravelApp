@@ -1,11 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Heart, ExternalLink, Loader2, Sparkles, Map as MapIcon, X, Search, Plus, Check } from 'lucide-react';
+import { Heart, ExternalLink, Loader2, Sparkles, Map as MapIcon, X, Search, Plus, Check, Star, MapPin } from 'lucide-react';
 import { Utensils, Landmark, Zap, Mountain } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { model } from '../lib/gemini';
 import { supabase } from '../lib/supabase';
-import { fetchPlacePhoto } from '../lib/google-maps';
+import { fetchPlacePhoto, searchNearbyFiltered } from '../lib/google-maps';
+import type { DiscoverFilter, NearbyPlace } from '../lib/google-maps';
 import type { DiscoveryPlace } from './DiscoveryCard';
+
+const NEARBY_FILTERS: { id: DiscoverFilter; label: string; icon: React.ReactNode }[] = [
+  { id: 'food', label: 'Restauracja', icon: <Utensils size={13} /> },
+  { id: 'attraction', label: 'Atrakcje', icon: <Zap size={13} /> },
+  { id: 'history', label: 'Historia', icon: <Landmark size={13} /> },
+];
 
 const CATEGORY_LABEL: Record<string, string> = {
   food: 'Restauracja', sightseeing: 'Kulturalne', activity: '4fun', scenery: 'Widoczki',
@@ -28,21 +35,6 @@ const CATEGORY_FALLBACK: Record<string, string> = {
   activity: 'from-emerald-300 to-teal-500',
   scenery: 'from-amber-200 to-orange-400',
 };
-
-const REGIONS = [
-  'Madrid - Prado, Retiro, Gran Vía, Palacio Real, Malasaña',
-  'Barcelona - Sagrada Família, Park Güell, Barceloneta, barrio gótico',
-  'Sevilla - Catedral, Alcázar, barrio Santa Cruz, Triana, Metropol Parasol',
-  'Granada - Alhambra, Albaicín, Sacromonte, Sierra Nevada',
-  'Valencia - Ciudad de las Artes, La Lonja, barrio del Carmen, plaże',
-  'Toledo, Segovia, Cuenca - spektakularne historyczne miasta',
-  'San Sebastián, Bilbao, kraj Basków - gastronomia i kultura',
-  'Mallorca - Palma, Serra de Tramuntana, plaże i jaskinie',
-  'Córdoba - Mezquita, Medina Azahara, patio de los naranjos',
-  'Málaga, Cádiz, Ronda - Andaluzja i wybrzeże',
-  'Salamanca, Ávila, Burgos - kastylijskie klejnoty',
-  'Madryt okolice - El Escorial, Aranjuez, Alcalá de Henares',
-];
 
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 const OPENAI_KEY = import.meta.env.VITE_OPENAI_API_KEY ?? '';
@@ -128,6 +120,8 @@ interface DiscoverItem {
   lat: number;
   lng: number;
   photoUrl: string | null;
+  rating?: number | null;
+  userRatingsTotal?: number | null;
   aiDescription?: string;
   generatingDesc: boolean;
   savingFav: boolean;
@@ -135,6 +129,23 @@ interface DiscoverItem {
   addingPlan: boolean;
   inPlan?: boolean;
   planError?: string;
+}
+
+function nearbyToItem(p: NearbyPlace): DiscoverItem {
+  return {
+    id: p.id,
+    name: p.name,
+    description: '',
+    category: p.category,
+    lat: p.lat,
+    lng: p.lng,
+    photoUrl: p.photoUrl,
+    rating: p.rating,
+    userRatingsTotal: p.userRatingsTotal,
+    generatingDesc: false,
+    savingFav: false,
+    addingPlan: false,
+  };
 }
 
 function dbRowToItem(p: any): DiscoverItem {
@@ -157,6 +168,7 @@ interface DiscoverModeProps {
   onRemoveFavorite: (id: string) => void;
   onAddToPlan: (place: DiscoveryPlace) => Promise<string | null>;
   favorites: any[];
+  userLocation: { lat: number; lng: number };
 }
 
 function SkeletonCard() {
@@ -229,19 +241,32 @@ function DiscoverCard({
           <h3 className="text-lg font-bold text-white leading-tight drop-shadow-md line-clamp-2">
             {item.name}
           </h3>
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold mt-1 ${badge}`}>
-            {CATEGORY_ICON[item.category]}
-            {CATEGORY_LABEL[item.category] ?? item.category}
-          </span>
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${badge}`}>
+              {CATEGORY_ICON[item.category]}
+              {CATEGORY_LABEL[item.category] ?? item.category}
+            </span>
+            {item.rating != null && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-white/90 text-gray-800">
+                <Star size={10} className="fill-amber-400 text-amber-400" />
+                {item.rating.toFixed(1)}
+                {item.userRatingsTotal != null && (
+                  <span className="text-gray-500 font-normal">({item.userRatingsTotal.toLocaleString('pl-PL')})</span>
+                )}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Base description */}
-      <div className="px-4 pt-3 pb-1">
-        <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-          {item.description}
-        </p>
-      </div>
+      {item.description && (
+        <div className="px-4 pt-3 pb-1">
+          <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+            {item.description}
+          </p>
+        </div>
+      )}
 
       {/* AI extended description */}
       <AnimatePresence>
@@ -336,14 +361,9 @@ function DiscoverCard({
   );
 }
 
-const DiscoverMode: React.FC<DiscoverModeProps> = ({ onFavorite, onRemoveFavorite, onAddToPlan, favorites }) => {
+const DiscoverMode: React.FC<DiscoverModeProps> = ({ onFavorite, onRemoveFavorite, onAddToPlan, favorites, userLocation }) => {
   const [items, setItems] = useState<DiscoverItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const batchRef = useRef(0);
-  const seenNamesRef = useRef<Set<string>>(new Set());
-  const sentinelRef = useRef<HTMLDivElement>(null);
-  const isFetchingRef = useRef(false);
   const pendingLikesRef = useRef<Set<string>>(new Set());
 
   const [cityInput, setCityInput] = useState('');
@@ -352,118 +372,42 @@ const DiscoverMode: React.FC<DiscoverModeProps> = ({ onFavorite, onRemoveFavorit
   const [cityLoading, setCityLoading] = useState(false);
   const [cityError, setCityError] = useState(false);
 
-  const fetchBatch = useCallback(async (count: number): Promise<DiscoverItem[]> => {
-    const region = REGIONS[batchRef.current % REGIONS.length];
-    batchRef.current++;
-
-    const seen = [...seenNamesRef.current].slice(-20);
-    const excludeStr = seen.length > 0
-      ? `\nNie powtarzaj tych miejsc: ${seen.join(', ')}.`
-      : '';
-
-    const prompt = `Jesteś ekspertem od turystyki w Hiszpanii. Zaproponuj ${count} wartych odwiedzenia miejsc w regionie: ${region}.
-
-Zwróć TYLKO tablicę JSON (zero tekstu poza tablicą):
-[{"name":"...","description":"...","category":"...","lat":0.0,"lng":0.0}]
-
-Zasady:
-- description: dokładnie 2 zdania po polsku — dlaczego warto i co zobaczysz
-- category: dokładnie jedno z: "food", "sightseeing", "activity", "scenery"
-- Prawdziwe miejsca z dokładnymi współrzędnymi GPS${excludeStr}
-Zwróć dokładnie ${count} miejsc.`;
-
-    const raw = await runAIPrompt(prompt);
-
-    return raw
-      .filter(p => p.name && p.description && p.lat && p.lng)
-      .filter(p => !seenNamesRef.current.has(p.name))
-      .map(p => {
-        seenNamesRef.current.add(p.name);
-        return {
-          id: crypto.randomUUID(),
-          name: String(p.name),
-          description: String(p.description),
-          category: String(p.category ?? 'sightseeing'),
-          lat: Number(p.lat),
-          lng: Number(p.lng),
-          photoUrl: null,
-          generatingDesc: false,
-          savingFav: false,
-          addingPlan: false,
-        };
-      });
-  }, []);
+  const [nearbyFilter, setNearbyFilter] = useState<DiscoverFilter | null>(null);
+  const [nearbyItems, setNearbyItems] = useState<DiscoverItem[]>([]);
+  const [nearbyLoading, setNearbyLoading] = useState(false);
+  const [nearbyError, setNearbyError] = useState(false);
 
   const loadPhotos = useCallback((batch: DiscoverItem[], setter: React.Dispatch<React.SetStateAction<DiscoverItem[]>>) => {
     runPool(batch, 3, async (item) => {
+      if (item.photoUrl) return;
       const url = await fetchPlacePhoto(item.lat, item.lng);
       if (url) setter(prev => prev.map(i => i.id === item.id ? { ...i, photoUrl: url } : i));
     });
   }, []);
 
+  // Default landing list = curated Alicante places from Supabase (no AI).
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // 1) Instant first paint from the curated DB feed (no AI round-trip).
       try {
         const { data } = await supabase
           .from('curated_places')
           .select('*')
-          .eq('city', '__feed__')
+          .ilike('city', 'Alicante')
           .order('sort_order', { ascending: true });
-        if (!cancelled && data && data.length > 0) {
+        if (!cancelled && data) {
           const curated = data.map(dbRowToItem);
-          curated.forEach(c => seenNamesRef.current.add(c.name)); // AI won't repeat these
           setItems(curated);
           loadPhotos(curated, setItems);
-          setLoading(false); // list is visible immediately
         }
       } catch (e) {
-        console.warn('curated feed fetch failed:', e);
-      }
-
-      // 2) AI top-up in the background — appended below the curated feed.
-      try {
-        const batch = await fetchBatch(6);
-        if (cancelled) return;
-        setItems(prev => [...prev, ...batch]);
-        loadPhotos(batch, setItems);
-      } catch (e) {
-        console.error(e);
+        console.warn('Alicante feed fetch failed:', e);
       } finally {
-        if (!cancelled) setLoading(false); // fallback if DB feed was empty
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [fetchBatch, loadPhotos]);
-
-  const loadMore = useCallback(async () => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
-    setLoadingMore(true);
-    try {
-      const batch = await fetchBatch(6);
-      setItems(prev => [...prev, ...batch]);
-      loadPhotos(batch, setItems);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingMore(false);
-      isFetchingRef.current = false;
-    }
-  }, [fetchBatch, loadPhotos]);
-
-  useEffect(() => {
-    if (loading) return;
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) loadMore(); },
-      { rootMargin: '300px' }
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [loading, loadMore]);
+  }, [loadPhotos]);
 
   const updateItem = useCallback((id: string, patch: Partial<DiscoverItem>) =>
     setItems(prev => prev.map(i => i.id === id ? { ...i, ...patch } : i)), []);
@@ -553,6 +497,80 @@ Pisz w stylu inspirującym, zachęcającym do odwiedzin. Tylko czysty tekst, bez
     updateCityItem(item.id, { addingPlan: false, inPlan: !err, planError: err ?? undefined });
   }, [onAddToPlan, updateCityItem]);
 
+  const updateNearbyItem = useCallback((id: string, patch: Partial<DiscoverItem>) =>
+    setNearbyItems(prev => prev.map(i => i.id === id ? { ...i, ...patch } : i)), []);
+
+  const handleNearbyLike = useCallback(async (item: DiscoverItem) => {
+    if (item.savingFav || pendingLikesRef.current.has(item.name)) return;
+    const allExisting = favorites.filter((f: any) => f.name === item.name);
+    if (allExisting.length > 0) {
+      allExisting.forEach((fav: any) => onRemoveFavorite(fav.id));
+      return;
+    }
+    pendingLikesRef.current.add(item.name);
+    updateNearbyItem(item.id, { savingFav: true, favError: undefined });
+    const err = await onFavorite({
+      lat: item.lat, lng: item.lng, name: item.name, category: item.category,
+      placeId: `ai:${item.lat.toFixed(5)},${item.lng.toFixed(5)}`, photoUrl: item.photoUrl,
+    });
+    pendingLikesRef.current.delete(item.name);
+    updateNearbyItem(item.id, { savingFav: false, favError: err ?? undefined });
+  }, [onFavorite, onRemoveFavorite, favorites, updateNearbyItem]);
+
+  const handleNearbyGenerateDesc = useCallback(async (item: DiscoverItem) => {
+    if (item.generatingDesc || item.aiDescription) return;
+    updateNearbyItem(item.id, { generatingDesc: true });
+    try {
+      const prompt = `Napisz zachęcający opis turystyczny (3-4 zdania po polsku) miejsca "${item.name}" w Hiszpanii.
+Uwzględnij: co czyni je wyjątkowym, atmosferę i nastrój tego miejsca, co poczujesz lub zobaczysz, dlaczego musisz tu być.
+Pisz w stylu inspirującym, zachęcającym do odwiedzin. Tylko czysty tekst, bez formatowania.`;
+      const desc = await generateText(prompt);
+      updateNearbyItem(item.id, { generatingDesc: false, aiDescription: desc });
+    } catch {
+      updateNearbyItem(item.id, { generatingDesc: false });
+    }
+  }, [updateNearbyItem]);
+
+  const handleNearbyAddToPlan = useCallback(async (item: DiscoverItem) => {
+    if (item.addingPlan || item.inPlan) return;
+    updateNearbyItem(item.id, { addingPlan: true, planError: undefined });
+    const err = await onAddToPlan({
+      lat: item.lat, lng: item.lng, name: item.name, category: item.category,
+      placeId: `ai:${item.lat.toFixed(5)},${item.lng.toFixed(5)}`, photoUrl: item.photoUrl,
+    });
+    updateNearbyItem(item.id, { addingPlan: false, inPlan: !err, planError: err ?? undefined });
+  }, [onAddToPlan, updateNearbyItem]);
+
+  const fetchNearby = useCallback(async (filter: DiscoverFilter) => {
+    setNearbyLoading(true);
+    setNearbyError(false);
+    setNearbyItems([]);
+    try {
+      const places = await searchNearbyFiltered(userLocation.lat, userLocation.lng, filter, 5000);
+      setNearbyItems(places.map(nearbyToItem));
+    } catch (e) {
+      console.error('fetchNearby error:', e);
+      setNearbyError(true);
+    } finally {
+      setNearbyLoading(false);
+    }
+  }, [userLocation.lat, userLocation.lng]);
+
+  const handleNearbyFilter = useCallback((filter: DiscoverFilter) => {
+    // Toggling a chip is its own mode — clear any active city search.
+    setCityQuery('');
+    setCityInput('');
+    setCityItems([]);
+    setCityError(false);
+    if (nearbyFilter === filter) {
+      setNearbyFilter(null);
+      setNearbyItems([]);
+      return;
+    }
+    setNearbyFilter(filter);
+    fetchNearby(filter);
+  }, [nearbyFilter, fetchNearby]);
+
   const fetchCityPlaces = useCallback(async (city: string) => {
     setCityLoading(true);
     setCityItems([]);
@@ -631,6 +649,9 @@ Zwróć dokładnie 12 miejsc.`;
   const handleCitySearch = () => {
     const q = cityInput.trim();
     if (!q || cityLoading) return;
+    // City search is its own mode — clear any active nearby filter.
+    setNearbyFilter(null);
+    setNearbyItems([]);
     setCityQuery(q);
     fetchCityPlaces(q);
   };
@@ -650,11 +671,14 @@ Zwróć dokładnie 12 miejsc.`;
           <div className="flex items-center gap-2 mb-2.5">
             <Sparkles size={18} className="text-spanish-orange shrink-0" />
             <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">Odkrywaj Hiszpanię</h2>
-            {!loading && !cityQuery && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{items.length} miejsc</span>
+            {!loading && !cityQuery && !nearbyFilter && (
+              <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">Alicante · {items.length}</span>
             )}
             {cityQuery && !cityLoading && (
               <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{cityItems.length} w {cityQuery}</span>
+            )}
+            {nearbyFilter && !nearbyLoading && !nearbyError && (
+              <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{nearbyItems.length} w pobliżu</span>
             )}
           </div>
 
@@ -695,10 +719,73 @@ Zwróć dokładnie 12 miejsc.`;
               {cityLoading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
             </button>
           </div>
+
+          {/* Nearby filter chips */}
+          <div className="flex items-center gap-2 mt-2.5 overflow-x-auto no-scrollbar">
+            <span className="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500 shrink-0">
+              <MapPin size={12} /> W pobliżu
+            </span>
+            {NEARBY_FILTERS.map(f => {
+              const active = nearbyFilter === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => handleNearbyFilter(f.id)}
+                  className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 active:scale-95 transition-all ${
+                    active
+                      ? 'bg-spanish-orange text-white shadow-sm'
+                      : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 shadow-neu-flat'
+                  }`}
+                >
+                  {f.icon}
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div className="px-4 pb-6 space-y-2">
-          {cityQuery ? (
+          {nearbyFilter ? (
+            nearbyLoading ? (
+              [1, 2, 3].map(i => <SkeletonCard key={i} />)
+            ) : nearbyError ? (
+              <div className="flex flex-col items-center gap-2 py-12 text-center">
+                <span className="text-2xl">⚠️</span>
+                <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">Błąd pobierania miejsc</p>
+                <p className="text-xs text-gray-400">Sprawdź połączenie i spróbuj ponownie.</p>
+                <button
+                  onClick={() => fetchNearby(nearbyFilter)}
+                  className="mt-2 px-4 py-2 rounded-2xl bg-spanish-orange text-white text-sm font-semibold active:scale-95 transition-transform"
+                >
+                  Spróbuj ponownie
+                </button>
+              </div>
+            ) : nearbyItems.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-12 text-center">
+                <span className="text-2xl">📍</span>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Brak miejsc w promieniu 5 km</p>
+              </div>
+            ) : (
+              nearbyItems.map((item, idx) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, y: 24 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: Math.min(idx * 0.04, 0.3), duration: 0.3, ease: 'easeOut' }}
+                >
+                  <DiscoverCard
+                    item={item}
+                    liked={favorites.some((f: any) => f.name === item.name)}
+                    onLike={() => handleNearbyLike(item)}
+                    onGenerateDesc={() => handleNearbyGenerateDesc(item)}
+                    onAddToPlan={() => handleNearbyAddToPlan(item)}
+                  />
+                </motion.div>
+              ))
+            )
+          ) : cityQuery ? (
             cityLoading ? (
               [1, 2, 3].map(i => <SkeletonCard key={i} />)
             ) : cityError ? (
@@ -758,16 +845,6 @@ Zwróć dokładnie 12 miejsc.`;
                   </motion.div>
                 ))
               )}
-
-              {/* Infinite scroll sentinel */}
-              <div ref={sentinelRef}>
-                {loadingMore && (
-                  <div className="flex items-center justify-center gap-2 py-6 text-sm text-gray-400 dark:text-gray-500">
-                    <Loader2 size={16} className="animate-spin text-spanish-orange" />
-                    Ładuję więcej miejsc…
-                  </div>
-                )}
-              </div>
             </>
           )}
         </div>

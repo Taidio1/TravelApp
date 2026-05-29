@@ -97,7 +97,7 @@ function App() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
   const [discoveryPlace, setDiscoveryPlace] = useState<DiscoveryPlace | null>(null);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number }>({ lat: 40.4168, lng: -3.7038 });
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number }>({ lat: 38.3460, lng: -0.4907 }); // Alicante fallback
   const [locationReady, setLocationReady] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [pendingVote, setPendingVote] = useState<{ name: string; discovery?: DiscoveryPlace; existingId?: string } | null>(null);
@@ -152,7 +152,7 @@ function App() {
 
   useEffect(() => {
     if (!navigator.geolocation) {
-      // Browser doesn't support geolocation — mark as ready with Madrid fallback
+      // Browser doesn't support geolocation — mark as ready with Alicante fallback
       setLocationReady(true);
       return;
     }
@@ -698,6 +698,7 @@ function App() {
                 onRemoveFavorite={handleRemoveFavorite}
                 onAddToPlan={handleAddToPlan}
                 favorites={favorites}
+                userLocation={userLocation}
               />
             </motion.div>
           )}

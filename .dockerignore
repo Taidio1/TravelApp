@@ -1,0 +1,23 @@
+# Build artifacts & deps (reinstalled/rebuilt inside the image)
+node_modules
+dist
+dist-ssr
+
+# VCS & tooling
+.git
+.gitignore
+.vscode
+.idea
+.claude
+
+# Docs / data not needed to build the frontend
+docs
+supabase
+*.md
+
+# Logs
+*.log
+npm-debug.log*
+
+# NOTE: .env is intentionally NOT ignored — Vite needs the VITE_* vars
+# at build time to bake them into the static bundle.

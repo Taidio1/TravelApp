@@ -13,10 +13,27 @@ export interface NearbyPlace {
   name: string;
   lat: number;
   lng: number;
-  category: 'food' | 'sightseeing';
+  category: 'food' | 'sightseeing' | 'activity';
   photoUrl: string | null;
   rating: number | null;
   userRatingsTotal: number | null;
+}
+
+// Discover-mode "near me" filters → Google Places primary types.
+export type DiscoverFilter = 'food' | 'attraction' | 'history';
+
+const FILTER_TYPES: Record<DiscoverFilter, { types: string[]; category: NearbyPlace['category'] }> = {
+  food: { types: ['restaurant', 'cafe', 'bar'], category: 'food' },
+  attraction: { types: ['tourist_attraction', 'amusement_park', 'zoo'], category: 'activity' },
+  history: { types: ['historical_landmark', 'museum', 'church'], category: 'sightseeing' },
+};
+
+// Bayesian (IMDb-style) weighted rating — keeps a 5.0/3-reviews place from
+// outranking a 4.7/8000-reviews place. m = credibility threshold, C = prior mean.
+function weightedRating(p: NearbyPlace, m = 50, C = 4.2): number {
+  const v = p.userRatingsTotal ?? 0;
+  const r = p.rating ?? 0;
+  return (v / (v + m)) * r + (m / (v + m)) * C;
 }
 
 // One Place.searchNearby (new Places API) call for a single category group.
@@ -25,7 +42,7 @@ async function fetchGroup(
   lng: number,
   radius: number,
   types: string[],
-  category: 'food' | 'sightseeing'
+  category: NearbyPlace['category']
 ): Promise<NearbyPlace[]> {
   try {
     const placesLib: any = await importLibrary('places');
@@ -76,6 +93,18 @@ export async function searchNearby(lat: number, lng: number): Promise<NearbyPlac
   return result;
 }
 
+// Single-filter nearby search within `radius` metres, sorted by weighted rating.
+export async function searchNearbyFiltered(
+  lat: number,
+  lng: number,
+  filter: DiscoverFilter,
+  radius = 5000
+): Promise<NearbyPlace[]> {
+  const { types, category } = FILTER_TYPES[filter];
+  const places = await fetchGroup(lat, lng, radius, types, category);
+  return places.sort((a, b) => weightedRating(b) - weightedRating(a));
+}
+
 export async function fetchPlacePhoto(lat: number, lng: number): Promise<string | null> {
   try {
     const placesLib: any = await importLibrary('places');
@@ -92,7 +121,7 @@ export async function fetchPlacePhoto(lat: number, lng: number): Promise<string 
 }
 
 export const mapOptions: any = {
-  center: { lat: 40.4168, lng: -3.7038 }, // Madrid
+  center: { lat: 38.3460, lng: -0.4907 }, // Alicante
   zoom: 12,
   disableDefaultUI: true,
   // mapId is required by AdvancedMarkerElement; replace 'DEMO_MAP_ID' with a real

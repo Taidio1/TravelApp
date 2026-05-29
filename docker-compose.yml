@@ -1,0 +1,18 @@
+services:
+  zwiedzamtu:
+    build: .
+    image: zwiedzamtu-frontend
+    container_name: zwiedzamtu-frontend
+    restart: unless-stopped
+    ports:
+      # Only 443 — port 80 stays with verum. UDP 443 enables HTTP/3.
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # Persist Let's Encrypt certs/config across restarts (rate limits!).
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
