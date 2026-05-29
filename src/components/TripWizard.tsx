@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Loader2, ExternalLink, Trash2, Plus, MapPin, Check, MinusCircle, Info, Map as MapViewIcon } from 'lucide-react';
 import { model } from '../lib/gemini';
+import { importLibrary } from '../lib/google-maps';
 
 type WizardStep = 'home' | 'route_detail' | 1 | 2 | 3 | 4 | 'loading' | 'results';
 
@@ -129,6 +130,32 @@ function persistRoutes(routes: SavedRoute[]) {
   localStorage.setItem('saved_routes', JSON.stringify(routes));
 }
 
+async function geocodePlaces(places: any[], lat: number, lng: number): Promise<any[]> {
+  try {
+    const { Place } = await importLibrary('places') as any;
+    const enriched = await Promise.all(
+      places.map(async (place) => {
+        try {
+          const { places: results } = await Place.searchByText({
+            textQuery: place.name,
+            fields: ['location'],
+            locationBias: { center: { lat, lng }, radius: 50000 },
+            maxResultCount: 1,
+          });
+          if (results?.length) {
+            const loc = results[0].location;
+            return { ...place, lat: loc.lat(), lng: loc.lng() };
+          }
+        } catch {}
+        return place;
+      })
+    );
+    return enriched;
+  } catch {
+    return places;
+  }
+}
+
 async function callAI(lat: number, lng: number, form: FormData): Promise<any[]> {
   const provider = (localStorage.getItem('ai_provider') as 'openai' | 'gemini') || 'gemini';
   const vibes = (form.vibe ?? 'mix').split(',');
@@ -244,6 +271,7 @@ const TripWizard: React.FC<TripWizardProps> = ({ currentLocation, onConfirm, onC
   const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>(loadRoutes);
   const [previewRoute, setPreviewRoute] = useState<SavedRoute | null>(initialRoute ?? null);
 
+
   // step 4 multi-select
   const [vibeSelections, setVibeSelections] = useState<Set<string>>(new Set());
 
@@ -310,7 +338,8 @@ const TripWizard: React.FC<TripWizardProps> = ({ currentLocation, onConfirm, onC
 
   const runAI = async (formData: FormData) => {
     setStep('loading');
-    const data = await callAI(currentLocation.lat, currentLocation.lng, formData);
+    const raw = await callAI(currentLocation.lat, currentLocation.lng, formData);
+    const data = await geocodePlaces(raw, currentLocation.lat, currentLocation.lng);
     setResults(data);
     setSelected(new Set());
     setStep('results');
@@ -370,7 +399,8 @@ Mów po polsku, potocznie i z luzem. Wplat ciekawostkę której nie ma w żadnym
     setLoadingSuggestions(true);
     setSuggestions([]);
     setLoadingSuggestionDetails(new Set());
-    const data = await callAISuggestions(previewRoute.places, currentLocation.lat, currentLocation.lng);
+    const raw = await callAISuggestions(previewRoute.places, currentLocation.lat, currentLocation.lng);
+    const data = await geocodePlaces(raw, currentLocation.lat, currentLocation.lng);
     setSuggestions(data);
     updateRoute({ ...previewRoute, pendingSuggestions: data });
     setLoadingSuggestions(false);

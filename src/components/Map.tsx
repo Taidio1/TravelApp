@@ -82,7 +82,8 @@ const Map: React.FC<MapProps> = ({
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
   const [mapTypeId, setMapTypeId] = useState<'roadmap' | 'satellite'>('roadmap');
-  const overlaysRef = useRef<any[]>([]);
+  // keyed pin store for reconciliation: key -> { overlay, sig }
+  const overlaysRef = useRef<globalThis.Map<string, { overlay: any; sig: string }>>(new globalThis.Map());
   const overlayClassRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
   const userPosRef = useRef<{ lat: number; lng: number }>({
@@ -291,14 +292,20 @@ const Map: React.FC<MapProps> = ({
     };
   }, [map, searchCenter]);
 
-  // render all pins (DB places + discovery) as HTML photo bubbles
+  // render all pins (DB places + discovery) as HTML photo bubbles.
+  // Reconciles against the existing overlay set by key instead of tearing
+  // down and rebuilding every DOM node on each change.
   useEffect(() => {
     if (!map) return;
 
-    overlaysRef.current.forEach((o: any) => o.setMap(null));
-    overlaysRef.current = [];
+    const store = overlaysRef.current;
 
-    if (planningMode) return;
+    if (planningMode) {
+      // planning view hides regular pins
+      store.forEach(({ overlay }) => overlay.setMap(null));
+      store.clear();
+      return;
+    }
 
     const g = (window as any).google.maps;
     const PinOverlay = getPinOverlayClass(g);
@@ -338,7 +345,31 @@ const Map: React.FC<MapProps> = ({
       (a, b) => distanceKm(uLat, uLng, a.lat, a.lng) - distanceKm(uLat, uLng, b.lat, b.lng)
     );
 
-    ordered.forEach((m, i) => {
+    // visual identity of a pin — if unchanged we keep the existing DOM node
+    const sigOf = (m: PinModel) =>
+      `${m.name}|${m.lat}|${m.lng}|${m.category}|${m.photoUrl ?? ''}|${m.approved}`;
+
+    const desired = new Set(ordered.map((m) => m.key));
+
+    // remove pins no longer present
+    store.forEach(({ overlay }, key) => {
+      if (!desired.has(key)) {
+        overlay.setMap(null);
+        store.delete(key);
+      }
+    });
+
+    // add new / replace changed pins; leave unchanged ones untouched
+    let newCount = 0;
+    ordered.forEach((m) => {
+      const sig = sigOf(m);
+      const existing = store.get(m.key);
+      if (existing && existing.sig === sig) return; // unchanged → keep DOM node
+      if (existing) {
+        existing.overlay.setMap(null);
+        store.delete(m.key);
+      }
+
       const color = m.approved
         ? '#F39C12'
         : CATEGORY_COLORS[m.category] ?? CATEGORY_COLORS.default;
@@ -347,7 +378,7 @@ const Map: React.FC<MapProps> = ({
       const wrap = document.createElement('div');
       wrap.className = 'map-pin' + (m.approved ? ' map-pin--approved' : '');
       wrap.style.setProperty('--pin-color', color);
-      wrap.style.animationDelay = `${i * STAGGER_MS}ms`;
+      wrap.style.animationDelay = `${newCount++ * STAGGER_MS}ms`;
 
       const media = m.photoUrl
         ? `<img class="map-pin-photo" src="${m.photoUrl}" alt="" />`
@@ -377,14 +408,15 @@ const Map: React.FC<MapProps> = ({
         }
       );
       overlay.setMap(map);
-      overlaysRef.current.push(overlay);
+      store.set(m.key, { overlay, sig });
     });
-
-    return () => {
-      overlaysRef.current.forEach((o: any) => o.setMap(null));
-      overlaysRef.current = [];
-    };
   }, [map, places, discovery, categoryFilter, planningMode]);
+
+  // tear down all regular pins on unmount
+  useEffect(() => () => {
+    overlaysRef.current.forEach(({ overlay }) => overlay.setMap(null));
+    overlaysRef.current.clear();
+  }, []);
 
   // Planning mode: sequential marker → line → marker → line animation
   useEffect(() => {
@@ -675,4 +707,4 @@ const Map: React.FC<MapProps> = ({
   );
 };
 
-export default Map;
+export default React.memo(Map);

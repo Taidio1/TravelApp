@@ -76,6 +76,21 @@ export async function searchNearby(lat: number, lng: number): Promise<NearbyPlac
   return result;
 }
 
+export async function fetchPlacePhoto(lat: number, lng: number): Promise<string | null> {
+  try {
+    const placesLib: any = await importLibrary('places');
+    const { Place } = placesLib;
+    const { places } = await Place.searchNearby({
+      fields: ['photos'],
+      locationRestriction: { center: { lat, lng }, radius: 200 },
+      maxResultCount: 1,
+    });
+    return places?.[0]?.photos?.[0]?.getURI({ maxWidth: 800, maxHeight: 600 }) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export const mapOptions: any = {
   center: { lat: 40.4168, lng: -3.7038 }, // Madrid
   zoom: 12,

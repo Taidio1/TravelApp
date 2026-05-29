@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import Map from './components/Map';
 import LocationCard from './components/LocationCard';
-import TripWizard from './components/TripWizard';
-import SavedPlaces from './components/SavedPlaces';
+import DiscoverMode from './components/DiscoverMode';
 import DiscoveryCard from './components/DiscoveryCard';
 import type { DiscoveryPlace } from './components/DiscoveryCard';
 import VotingBanner from './components/VotingBanner';
@@ -12,10 +11,53 @@ import ProfilePage from './components/ProfilePage';
 import Auth from './components/Auth';
 import { useRealtime } from './hooks/useRealtime';
 import { supabase } from './lib/supabase';
-import { Sparkles, List, Map as MapIcon, Star, X, Bookmark, Check } from 'lucide-react';
+import { importLibrary } from './lib/google-maps';
+import { Sparkles, List, Map as MapIcon, Star, X, Bookmark, Check, Compass, Search, Navigation, Route, MessageCircle } from 'lucide-react';
 import Button from './components/Button';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useDarkMode } from './hooks/useDarkMode';
+
+const TripWizard = lazy(() => import('./components/TripWizard'));
+const AIChat = lazy(() => import('./components/AIChat'));
+
+async function geocodeCity(city: string): Promise<{ lat: number; lng: number; label: string } | null> {
+  try {
+    const lib = await importLibrary('geocoding') as any;
+    const geocoder = new lib.Geocoder();
+    const result = await geocoder.geocode({ address: city });
+    if (result.results?.length) {
+      const loc = result.results[0].geometry.location;
+      return {
+        lat: typeof loc.lat === 'function' ? loc.lat() : loc.lat,
+        lng: typeof loc.lng === 'function' ? loc.lng() : loc.lng,
+        label: result.results[0].address_components?.[0]?.long_name ?? result.results[0].formatted_address,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reverse-geocode lat/lng to a human-readable city/locality name. */
+async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  try {
+    const lib = await importLibrary('geocoding') as any;
+    const geocoder = new lib.Geocoder();
+    const result = await geocoder.geocode({ location: { lat, lng } });
+    if (!result.results?.length) return null;
+    // Prefer locality (city), then administrative_area_level_2, then formatted_address
+    for (const r of result.results) {
+      const locality = r.address_components?.find((c: any) =>
+        c.types.includes('locality') || c.types.includes('administrative_area_level_2')
+      );
+      if (locality) return locality.long_name;
+    }
+    return result.results[0].formatted_address ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const FILTERS = [
   { id: 'all',        label: 'Wszystkie',  emoji: '🗺️' },
@@ -28,16 +70,21 @@ const FILTERS = [
 
 type FilterId = typeof FILTERS[number]['id'];
 
+// Stable reference for "no places" so memoized <Map> props don't churn each render.
+const EMPTY_PLACES: any[] = [];
+
 function App() {
   const [session, setSession] = useState<any>(null);
   const places = useRealtime<any>('places');
   const votes = useRealtime<any>('votes');
   const plans = useRealtime<any>('daily_plans');
-  const favorites = useRealtime<any>('favorites');
+  const [favorites, setFavorites] = useState<any[]>([]);
   const rounds = useRealtime<any>('voting_rounds');
 
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
   const [showWizard, setShowWizard] = useState(false);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [planningMode, setPlanningMode] = useState(false);
   const [planningPlaces, setPlanningPlaces] = useState<any[]>([]);
   const [planningRouteName, setPlanningRouteName] = useState('');
@@ -46,36 +93,123 @@ function App() {
   const [suggestionPlaces, setSuggestionPlaces] = useState<any[] | null>(null);
   const [suggestionFitNonce, setSuggestionFitNonce] = useState(0);
   const [suggestionPreviewRoute, setSuggestionPreviewRoute] = useState<any>(null);
-  const [view, setView] = useState<'map' | 'saved'>('map');
+  const [view, setView] = useState<'map' | 'discover' | 'favorites'>('map');
   const [userProfile, setUserProfile] = useState<any>(null);
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
   const [discoveryPlace, setDiscoveryPlace] = useState<DiscoveryPlace | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number }>({ lat: 40.4168, lng: -3.7038 });
-  const [showFavorites, setShowFavorites] = useState(false);
+  const [locationReady, setLocationReady] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [pendingVote, setPendingVote] = useState<{ name: string; discovery?: DiscoveryPlace; existingId?: string } | null>(null);
   const [focus, setFocus] = useState<{ lat: number; lng: number; nonce: number } | null>(null);
   const [dark, setDark] = useDarkMode();
   const [enlargedPhoto, setEnlargedPhoto] = useState<string | null>(null);
+  const [citySearch, setCitySearch] = useState('');
+  const [citySearching, setCitySearching] = useState(false);
+  const [citySearchError, setCitySearchError] = useState(false);
+  const [activeCityLabel, setActiveCityLabel] = useState<string | null>(null);
+  const [isLiveLocation, setIsLiveLocation] = useState(true);
 
   const activeRound = rounds.find((r: any) => r.status === 'active');
   const finalizingRef = useRef<Set<string>>(new Set());
 
-  const filteredPlaces = activeFilter === 'all'
-    ? places
-    : activeFilter === 'must_have'
-      ? places.filter((p: any) => p.status === 'approved')
-      : places.filter((p: any) => p.category === activeFilter);
+  // Stable handlers for <Map> — keep its props referentially equal across
+  // unrelated re-renders (e.g. a vote ping) so the memoized map doesn't rebuild.
+  const handleMapClick = useCallback(() => { setSelectedPlace(null); setDiscoveryPlace(null); }, []);
+  const handleMarkerClick = useCallback((place: any) => { setDiscoveryPlace(null); setSelectedPlace(place); }, []);
+  const handleDiscoveryClick = useCallback((p: any) => { setSelectedPlace(null); setDiscoveryPlace(p); }, []);
+  const handleLocate = useCallback((lat: number, lng: number) => setUserLocation({ lat, lng }), []);
+
+  // Nearest board places to the user — passed to the AI chat as local context.
+  const nearbyPlaceNames = useMemo(() => {
+    const { lat, lng } = userLocation;
+    return places
+      .map((p: any) => ({ place: p, d: (Number(p.lat) - lat) ** 2 + (Number(p.lng) - lng) ** 2 }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 10)
+      .map(({ place: p }) => ({
+        name: p.name as string,
+        rating: p.rating != null ? Number(p.rating) : null,
+        totalRatings: p.user_ratings_total != null ? Number(p.user_ratings_total) : null,
+        category: p.category as string | null,
+      }));
+  }, [places, userLocation]);
+
+  const filteredPlaces = useMemo(() => (
+    activeFilter === 'all'
+      ? places
+      : activeFilter === 'must_have'
+        ? places.filter((p: any) => p.status === 'approved')
+        : places.filter((p: any) => p.category === activeFilter)
+  ), [places, activeFilter]);
 
   useEffect(() => {
+    if (!session) return;
+    supabase.from('favorites').select('*').eq('user_id', session.user.id).then(({ data }) => {
+      if (data) setFavorites(data);
+    });
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      // Browser doesn't support geolocation — mark as ready with Madrid fallback
+      setLocationReady(true);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setUserLocation({ lat, lng });
+        setIsLiveLocation(true);
+        // Auto-populate the city label via reverse geocoding
+        const label = await reverseGeocode(lat, lng);
+        if (label) setActiveCityLabel(label);
+        setLocationReady(true);
+      },
+      () => {
+        // GPS denied or timed out — mark ready so the chat isn't blocked forever
+        setLocationReady(true);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }, []);
+
+  const handleCitySearch = async () => {
+    const q = citySearch.trim();
+    if (!q) return;
+    setCitySearching(true);
+    setCitySearchError(false);
+    const result = await geocodeCity(q);
+    setCitySearching(false);
+    if (result) {
+      setUserLocation({ lat: result.lat, lng: result.lng });
+      setFocus({ lat: result.lat, lng: result.lng, nonce: Date.now() });
+      setActiveCityLabel(result.label);
+      setIsLiveLocation(false);
+      setCitySearch('');
+    } else {
+      setCitySearchError(true);
+    }
+  };
+
+  const resetToLiveLocation = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (pos) => {
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setUserLocation(loc);
+          setFocus({ ...loc, nonce: Date.now() });
+        },
         () => {},
         { enableHighAccuracy: true, timeout: 8000 }
       );
     }
-  }, []);
+    setActiveCityLabel(null);
+    setIsLiveLocation(true);
+    setCitySearch('');
+    setCitySearchError(false);
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -167,7 +301,7 @@ function App() {
 
   const handleAddFavorite = async (p: DiscoveryPlace) => {
     if (!session) return 'Brak sesji';
-    const { error } = await supabase.from('favorites').insert({
+    const { data, error } = await supabase.from('favorites').insert({
       user_id: session.user.id,
       name: p.name,
       category: p.category,
@@ -175,16 +309,73 @@ function App() {
       lng: p.lng,
       google_place_id: p.placeId,
       photo_url: p.photoUrl,
-    });
+    }).select().single();
     if (error) {
       console.error('Add favorite failed:', error.message);
       return error.message;
     }
+    if (data) setFavorites(prev => [...prev, data]);
     return null;
   };
 
   const handleRemoveFavorite = async (id: string) => {
-    await supabase.from('favorites').delete().eq('id', id);
+    const { error } = await supabase.from('favorites').delete().eq('id', id);
+    if (!error) setFavorites(prev => prev.filter(f => f.id !== id));
+  };
+
+  // From a discovery point: add the place to today's daily plan (creating the place row if needed).
+  const handleAddToPlan = async (p: DiscoveryPlace): Promise<string | null> => {
+    if (!session) return 'Brak sesji';
+    const today = new Date().toISOString().split('T')[0];
+
+    // find or create the underlying place row
+    let placeId: string;
+    const { data: existing } = await supabase
+      .from('places')
+      .select('id')
+      .eq('name', p.name)
+      .maybeSingle();
+    if (existing) {
+      placeId = existing.id;
+      await supabase.from('places').update({ status: 'approved' }).eq('id', placeId);
+    } else {
+      const { data: created, error: insErr } = await supabase
+        .from('places')
+        .insert({
+          name: p.name,
+          description: '',
+          category: p.category,
+          lat: p.lat,
+          lng: p.lng,
+          google_place_id: p.placeId,
+          photo_url: p.photoUrl,
+          created_by: session.user.id,
+          status: 'approved',
+          ai_suggested: true,
+        })
+        .select('id')
+        .single();
+      if (insErr || !created) return insErr?.message ?? 'Błąd dodawania miejsca';
+      placeId = created.id;
+    }
+
+    // skip if already in today's plan
+    const { data: dup } = await supabase
+      .from('daily_plans')
+      .select('id')
+      .eq('date', today)
+      .eq('place_id', placeId)
+      .maybeSingle();
+    if (dup) return null;
+
+    const { error } = await supabase.from('daily_plans').insert({
+      date: today,
+      place_id: placeId,
+      order: plans.length + 1,
+      assigned_by: session.user.id,
+    });
+    if (error) return error.message;
+    return null;
   };
 
   const placeExists = async (name: string): Promise<boolean> => {
@@ -367,7 +558,7 @@ function App() {
       {/* Main Content */}
       <div className="flex-1 relative overflow-hidden">
         <AnimatePresence mode="wait">
-          {view === 'map' ? (
+          {view === 'map' && (
             <motion.div
               key="map"
               initial={{ opacity: 0, scale: 0.95 }}
@@ -375,8 +566,69 @@ function App() {
               exit={{ opacity: 0, scale: 1.05 }}
               className="w-full h-full relative"
             >
-              {/* Filter pills */}
-              <div className="absolute top-4 left-0 right-0 z-10 px-4">
+              {/* Filter pills + city search */}
+              <div className="absolute top-4 left-0 right-0 z-10 px-4 flex flex-col gap-2">
+                {/* City search bar */}
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 flex items-center gap-2 bg-white/95 dark:bg-gray-800/95 backdrop-blur rounded-2xl shadow-neu-flat px-3 h-10">
+                    <Search size={15} className="text-gray-400 shrink-0" />
+                    <input
+                      type="text"
+                      value={citySearch}
+                      onChange={e => { setCitySearch(e.target.value); setCitySearchError(false); }}
+                      onKeyDown={e => e.key === 'Enter' && handleCitySearch()}
+                      placeholder="Szukaj miasta..."
+                      className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-100 placeholder-gray-400 outline-none"
+                    />
+                    {citySearching && <div className="w-4 h-4 border-2 border-spanish-orange border-t-transparent rounded-full animate-spin shrink-0" />}
+                    {!citySearching && citySearch.length > 0 && (
+                      <button onClick={handleCitySearch} className="shrink-0 text-spanish-orange font-semibold text-xs active:opacity-70">
+                        Szukaj
+                      </button>
+                    )}
+                    {!citySearching && citySearch.length === 0 && !isLiveLocation && (
+                      <button onClick={resetToLiveLocation} className="shrink-0 text-gray-400 active:opacity-70">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                  {!isLiveLocation && (
+                    <button
+                      onClick={resetToLiveLocation}
+                      className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-gray-800/95 backdrop-blur shadow-neu-flat flex items-center justify-center shrink-0"
+                      title="Wróć do mojej lokalizacji"
+                    >
+                      <Navigation size={16} className="text-spanish-orange" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Active city label or error */}
+                <AnimatePresence>
+                  {citySearchError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      className="mx-1 px-3 py-1.5 rounded-xl bg-red-100/90 dark:bg-red-900/40 text-red-600 dark:text-red-400 text-xs font-medium"
+                    >
+                      Nie znaleziono miasta. Spróbuj inaczej.
+                    </motion.div>
+                  )}
+                  {activeCityLabel && !citySearchError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      className="mx-1 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-spanish-orange/15 self-start"
+                    >
+                      <MapIcon size={11} className="text-spanish-orange" />
+                      <span className="text-spanish-orange text-xs font-semibold">{activeCityLabel}</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Filter pills */}
                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
                   {FILTERS.map(f => (
                     <button
@@ -402,7 +654,7 @@ function App() {
                     initial={{ opacity: 0, y: -20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -20 }}
-                    className="absolute top-16 left-4 right-20 z-20"
+                    className="absolute top-36 left-4 right-4 z-20"
                   >
                     <VotingBanner
                       round={activeRound}
@@ -420,30 +672,51 @@ function App() {
               <Map
                 places={filteredPlaces}
                 categoryFilter={activeFilter}
-                onMapClick={() => { setSelectedPlace(null); setDiscoveryPlace(null); }}
-                onMarkerClick={(place) => { setDiscoveryPlace(null); setSelectedPlace(place); }}
-                onDiscoveryClick={(p) => { setSelectedPlace(null); setDiscoveryPlace(p); }}
-                onLocate={(lat, lng) => setUserLocation({ lat, lng })}
+                onMapClick={handleMapClick}
+                onMarkerClick={handleMarkerClick}
+                onDiscoveryClick={handleDiscoveryClick}
+                onLocate={handleLocate}
                 focus={focus}
                 planningMode={planningMode}
                 planningPlaces={planningPlaces}
-                previewPlaces={previewPlaces ?? []}
-                suggestionPlaces={suggestionPlaces ?? []}
+                previewPlaces={previewPlaces ?? EMPTY_PLACES}
+                suggestionPlaces={suggestionPlaces ?? EMPTY_PLACES}
                 suggestionFitRequest={suggestionFitNonce}
               />
             </motion.div>
-          ) : (
+          )}
+          {view === 'discover' && (
             <motion.div
-              key="saved"
+              key="discover"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="w-full h-full"
             >
-              <SavedPlaces
+              <DiscoverMode
+                onFavorite={handleAddFavorite}
+                onRemoveFavorite={handleRemoveFavorite}
+                onAddToPlan={handleAddToPlan}
                 favorites={favorites}
-                currentUserId={session.user.id}
+              />
+            </motion.div>
+          )}
+          {view === 'favorites' && (
+            <motion.div
+              key="favorites"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="w-full h-full"
+            >
+              <FavoritesList
+                favorites={favorites}
+                onClose={() => setView('map')}
                 onRemove={handleRemoveFavorite}
+                onShowOnMap={(fav) => {
+                  setView('map');
+                  setFocus({ lat: Number(fav.lat), lng: Number(fav.lng), nonce: Date.now() });
+                }}
               />
             </motion.div>
           )}
@@ -494,28 +767,6 @@ function App() {
                 onImageClick={() => setEnlargedPhoto(selectedPlace.photo_url)}
                 isAdmin={userProfile?.role === 'admin'}
                 isCandidate={!!activeRound && selectedPlace?.round_id === activeRound.id}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Favorites Overlay (private) */}
-        <AnimatePresence>
-          {showFavorites && (
-            <motion.div
-              initial={{ opacity: 0, y: 100 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 100 }}
-              className="absolute inset-x-0 bottom-4 z-30 px-4 flex justify-center"
-            >
-              <FavoritesList
-                favorites={favorites}
-                onClose={() => setShowFavorites(false)}
-                onRemove={handleRemoveFavorite}
-                onShowOnMap={(fav) => {
-                  setShowFavorites(false);
-                  setFocus({ lat: Number(fav.lat), lng: Number(fav.lng), nonce: Date.now() });
-                }}
               />
             </motion.div>
           )}
@@ -670,28 +921,28 @@ function App() {
               <MapIcon size={22} />
             </Button>
             <Button
-              variant="neutral"
+              variant={view === 'favorites' ? 'primary' : 'neutral'}
               size="icon"
               className="w-12 h-12"
-              onClick={() => setShowFavorites(true)}
+              onClick={() => setView('favorites')}
             >
-              <Star size={22} className="text-spanish-orange" />
+              <Star size={22} className={view === 'favorites' ? '' : 'text-spanish-orange'} />
             </Button>
             <Button
               variant="primary"
               size="icon"
               className="w-14 h-14 shadow-lg -mt-5"
-              onClick={() => setShowWizard(true)}
+              onClick={() => setShowActionMenu(true)}
             >
               <Sparkles size={26} />
             </Button>
             <Button
-              variant={view === 'saved' ? 'primary' : 'neutral'}
+              variant={view === 'discover' ? 'primary' : 'neutral'}
               size="icon"
               className="w-12 h-12"
-              onClick={() => setView('saved')}
+              onClick={() => setView('discover')}
             >
-              <List size={22} />
+              <Compass size={22} />
             </Button>
             <button
               onClick={() => setShowProfile(true)}
@@ -702,11 +953,66 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Center-button action menu — choose route planning or AI chat */}
+      <AnimatePresence>
+        {showActionMenu && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end justify-center"
+            onClick={() => setShowActionMenu(false)}
+          >
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+            <motion.div
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 24, scale: 0.96 }}
+              transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+              onClick={e => e.stopPropagation()}
+              className="relative mb-24 w-[min(92vw,22rem)] flex flex-col gap-3 px-4"
+            >
+              <button
+                onClick={() => { setShowActionMenu(false); setShowWizard(true); }}
+                className="flex items-center gap-3 p-4 rounded-2xl bg-white dark:bg-gray-800 shadow-xl active:scale-[0.98] transition-all"
+              >
+                <div className="w-11 h-11 rounded-xl bg-spanish-orange/15 flex items-center justify-center shrink-0">
+                  <Route size={22} className="text-spanish-orange" />
+                </div>
+                <div className="text-left">
+                  <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Planowanie trasy</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500">Zbuduj trasę z AI i zobacz ją na mapie</p>
+                </div>
+              </button>
+              <button
+                onClick={() => { if (!locationReady) return; setShowActionMenu(false); setShowChat(true); }}
+                className={`flex items-center gap-3 p-4 rounded-2xl bg-white dark:bg-gray-800 shadow-xl transition-all ${
+                  locationReady ? 'active:scale-[0.98]' : 'opacity-60 cursor-wait'
+                }`}
+              >
+                <div className="w-11 h-11 rounded-xl bg-spanish-orange/15 flex items-center justify-center shrink-0">
+                  {locationReady
+                    ? <MessageCircle size={22} className="text-spanish-orange" />
+                    : <div className="w-5 h-5 rounded-full border-2 border-spanish-orange border-t-transparent animate-spin" />}
+                </div>
+                <div className="text-left">
+                  <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Chat z AI</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500">
+                    {locationReady ? 'Polecenia miejsc i dań w Twojej okolicy' : 'Pobieranie lokalizacji…'}
+                  </p>
+                </div>
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
 
     {/* Trip Wizard — fixed overlay outside the main layout stack */}
     <AnimatePresence>
       {showWizard && (
+        <Suspense fallback={null}>
         <TripWizard
           currentLocation={userLocation}
           onConfirm={(places, name, alreadySaved) => handleWizardConfirm(places, name, alreadySaved)}
@@ -726,6 +1032,22 @@ function App() {
           onSuggestionsChange={(places) => setSuggestionPlaces(places)}
           onShowSuggestionsOnMap={handleShowSuggestionsOnMap}
         />
+        </Suspense>
+      )}
+    </AnimatePresence>
+
+    {/* AI Chat — fixed overlay outside the main layout stack */}
+    <AnimatePresence>
+      {showChat && (
+        <Suspense fallback={null}>
+          <AIChat
+            userId={session.user.id}
+            currentLocation={userLocation}
+            locationLabel={activeCityLabel}
+            nearbyPlaces={nearbyPlaceNames}
+            onClose={() => setShowChat(false)}
+          />
+        </Suspense>
       )}
     </AnimatePresence>
     </>
