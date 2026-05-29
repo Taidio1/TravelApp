@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LocateFixed, Search, X, Loader2 } from 'lucide-react';
+import { LocateFixed, Search, X, Loader2, Layers } from 'lucide-react';
 import { importLibrary, mapOptions, searchNearby } from '../lib/google-maps';
 import type { NearbyPlace } from '../lib/google-maps';
 
@@ -60,6 +60,9 @@ interface MapProps {
   focus?: { lat: number; lng: number; nonce: number } | null;
   planningMode?: boolean;
   planningPlaces?: Array<{ name: string; lat: number; lng: number; category?: string }>;
+  previewPlaces?: Array<{ name: string; lat: number; lng: number; category?: string }>;
+  suggestionPlaces?: Array<{ name: string; lat: number; lng: number; category?: string }>;
+  suggestionFitRequest?: number;
 }
 
 const Map: React.FC<MapProps> = ({
@@ -72,9 +75,13 @@ const Map: React.FC<MapProps> = ({
   focus,
   planningMode = false,
   planningPlaces = [],
+  previewPlaces = [],
+  suggestionPlaces = [],
+  suggestionFitRequest = 0,
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
+  const [mapTypeId, setMapTypeId] = useState<'roadmap' | 'satellite'>('roadmap');
   const overlaysRef = useRef<any[]>([]);
   const overlayClassRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
@@ -91,9 +98,18 @@ const Map: React.FC<MapProps> = ({
   onDiscoveryClickRef.current = onDiscoveryClick;
   onLocateRef.current = onLocate;
 
+  useEffect(() => {
+    if (map) {
+      map.setMapTypeId(mapTypeId);
+    }
+  }, [map, mapTypeId]);
+
   const planningOverlaysRef = useRef<any[]>([]);
   const planningPolylineRef = useRef<any>(null);
   const planningAbortRef = useRef(false);
+  const previewOverlaysRef = useRef<any[]>([]);
+  const previewPolylineRef = useRef<any>(null);
+  const suggestionOverlaysRef = useRef<any[]>([]);
 
   // discovery (auto-fetched nearby) places + the location they were fetched for
   const [discovery, setDiscovery] = useState<NearbyPlace[]>([]);
@@ -458,8 +474,134 @@ const Map: React.FC<MapProps> = ({
     };
   }, [map, planningMode, planningPlaces]);
 
+  // Preview mode: instant blue markers + semi-transparent polyline overlaid on whatever is visible
+  useEffect(() => {
+    previewOverlaysRef.current.forEach(o => o.setMap(null));
+    previewOverlaysRef.current = [];
+    if (previewPolylineRef.current) {
+      previewPolylineRef.current.setMap(null);
+      previewPolylineRef.current = null;
+    }
+
+    if (!map || previewPlaces.length === 0) return;
+
+    const g = (window as any).google?.maps;
+    if (!g) return;
+
+    const PinOverlay = getPinOverlayClass(g);
+
+    const path = previewPlaces.map(p => ({ lat: Number(p.lat), lng: Number(p.lng) }));
+    const polyline = new g.Polyline({
+      path,
+      geodesic: true,
+      strokeColor: '#3498DB',
+      strokeOpacity: 0.55,
+      strokeWeight: 3,
+      map,
+    });
+    previewPolylineRef.current = polyline;
+
+    previewPlaces.forEach((p, i) => {
+      const el = document.createElement('div');
+      el.style.position = 'absolute';
+      el.style.transform = 'translate(-50%, -50%)';
+      el.style.width = '26px';
+      el.style.height = '26px';
+      el.style.borderRadius = '50%';
+      el.style.background = '#3498DB';
+      el.style.border = '2.5px solid #fff';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.color = '#fff';
+      el.style.fontSize = '11px';
+      el.style.fontWeight = 'bold';
+      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.25)';
+      el.style.opacity = '0.9';
+      el.style.pointerEvents = 'none';
+      el.style.zIndex = '6';
+      el.textContent = String(i + 1);
+
+      const overlay = new PinOverlay(new g.LatLng(Number(p.lat), Number(p.lng)), el, () => {});
+      overlay.setMap(map);
+      previewOverlaysRef.current.push(overlay);
+    });
+
+    return () => {
+      previewOverlaysRef.current.forEach(o => o.setMap(null));
+      previewOverlaysRef.current = [];
+      if (previewPolylineRef.current) {
+        previewPolylineRef.current.setMap(null);
+        previewPolylineRef.current = null;
+      }
+    };
+  }, [map, previewPlaces]);
+
+  // Fit map to show all suggestion + preview places when requested
+  useEffect(() => {
+    if (!map || !suggestionFitRequest) return;
+    const g = (window as any).google?.maps;
+    if (!g) return;
+    const all = [...previewPlaces, ...suggestionPlaces];
+    if (all.length === 0) return;
+    const bounds = new g.LatLngBounds();
+    all.forEach(p => bounds.extend(new g.LatLng(Number(p.lat), Number(p.lng))));
+    map.fitBounds(bounds, 80);
+  }, [map, suggestionFitRequest]);
+
+  // AI suggestions: green diamond pins (no polyline — unordered candidates)
+  useEffect(() => {
+    suggestionOverlaysRef.current.forEach(o => o.setMap(null));
+    suggestionOverlaysRef.current = [];
+
+    if (!map || suggestionPlaces.length === 0) return;
+
+    const g = (window as any).google?.maps;
+    if (!g) return;
+
+    const PinOverlay = getPinOverlayClass(g);
+
+    suggestionPlaces.forEach((p) => {
+      const el = document.createElement('div');
+      el.style.position = 'absolute';
+      el.style.transform = 'translate(-50%, -50%)';
+      el.style.width = '28px';
+      el.style.height = '28px';
+      el.style.borderRadius = '6px';
+      el.style.rotate = '45deg';
+      el.style.background = '#27AE60';
+      el.style.border = '2.5px solid #fff';
+      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.25)';
+      el.style.opacity = '0.9';
+      el.style.pointerEvents = 'none';
+      el.style.zIndex = '7';
+
+      const inner = document.createElement('div');
+      inner.style.width = '100%';
+      inner.style.height = '100%';
+      inner.style.display = 'flex';
+      inner.style.alignItems = 'center';
+      inner.style.justifyContent = 'center';
+      inner.style.rotate = '-45deg';
+      inner.style.color = '#fff';
+      inner.style.fontSize = '14px';
+      inner.style.lineHeight = '1';
+      inner.textContent = '✦';
+      el.appendChild(inner);
+
+      const overlay = new PinOverlay(new g.LatLng(Number(p.lat), Number(p.lng)), el, () => {});
+      overlay.setMap(map);
+      suggestionOverlaysRef.current.push(overlay);
+    });
+
+    return () => {
+      suggestionOverlaysRef.current.forEach(o => o.setMap(null));
+      suggestionOverlaysRef.current = [];
+    };
+  }, [map, suggestionPlaces]);
+
   return (
-    <div className="relative w-full h-full rounded-[24px] overflow-hidden shadow-neu-flat">
+    <div className="relative w-full h-full overflow-hidden shadow-neu-flat">
       <div ref={mapRef} className="w-full h-full" />
 
       {/* Locate-me button */}
@@ -473,6 +615,15 @@ const Map: React.FC<MapProps> = ({
         ) : (
           <LocateFixed size={22} />
         )}
+      </button>
+
+      {/* Layer toggle button */}
+      <button
+        onClick={() => setMapTypeId(prev => prev === 'roadmap' ? 'satellite' : 'roadmap')}
+        title="Zmień widok"
+        className="absolute top-32 right-4 z-20 w-12 h-12 rounded-full bg-white/95 dark:bg-gray-800/95 backdrop-blur shadow-neu-flat flex items-center justify-center text-spanish-orange active:shadow-neu-pressed transition-all"
+      >
+        <Layers size={22} className={mapTypeId === 'satellite' ? 'text-spanish-red' : ''} />
       </button>
 
       {/* Manual-search fallback */}

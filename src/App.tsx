@@ -12,7 +12,7 @@ import ProfilePage from './components/ProfilePage';
 import Auth from './components/Auth';
 import { useRealtime } from './hooks/useRealtime';
 import { supabase } from './lib/supabase';
-import { Sparkles, List, Map as MapIcon, Star, Moon, Sun, X, Bookmark, Check, ExternalLink } from 'lucide-react';
+import { Sparkles, List, Map as MapIcon, Star, X, Bookmark, Check } from 'lucide-react';
 import Button from './components/Button';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useDarkMode } from './hooks/useDarkMode';
@@ -42,7 +42,10 @@ function App() {
   const [planningPlaces, setPlanningPlaces] = useState<any[]>([]);
   const [planningRouteName, setPlanningRouteName] = useState('');
   const [planningRouteSaved, setPlanningRouteSaved] = useState(false);
-  const [showPlanningList, setShowPlanningList] = useState(false);
+  const [previewPlaces, setPreviewPlaces] = useState<any[] | null>(null);
+  const [suggestionPlaces, setSuggestionPlaces] = useState<any[] | null>(null);
+  const [suggestionFitNonce, setSuggestionFitNonce] = useState(0);
+  const [suggestionPreviewRoute, setSuggestionPreviewRoute] = useState<any>(null);
   const [view, setView] = useState<'map' | 'saved'>('map');
   const [userProfile, setUserProfile] = useState<any>(null);
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
@@ -184,7 +187,13 @@ function App() {
     await supabase.from('favorites').delete().eq('id', id);
   };
 
+  const placeExists = async (name: string): Promise<boolean> => {
+    const { data } = await supabase.from('places').select('id').eq('name', name).maybeSingle();
+    return !!data;
+  };
+
   const addCandidate = async (p: DiscoveryPlace, roundId: string) => {
+    if (await placeExists(p.name)) return;
     const { error } = await supabase.from('places').insert({
       name: p.name,
       description: '',
@@ -288,24 +297,28 @@ function App() {
     }
   };
 
-  const handleAISuggestions = async (suggestions: any[]) => {
-    for (const s of suggestions) {
-      const { error } = await supabase.from('places').insert({
-        ...s,
-        created_by: session.user.id,
-        ai_suggested: true
-      });
-      if (error) console.error('Place insert failed:', error.message, s);
-    }
+
+  const handleShowSuggestionsOnMap = (route: any) => {
+    setSuggestionPreviewRoute(route);
+    setShowWizard(false);
+    setSuggestionFitNonce(n => n + 1);
+  };
+
+  const handleReturnToSuggestionsList = () => {
+    setShowWizard(true);
   };
 
   const handleWizardConfirm = async (places: any[], name: string, alreadySaved = false) => {
     setShowWizard(false);
+    setPreviewPlaces(null);
+    setSuggestionPlaces(null);
+    setSuggestionPreviewRoute(null);
     setPlanningPlaces(places);
     setPlanningMode(true);
     setPlanningRouteName(name);
     setPlanningRouteSaved(alreadySaved);
     for (const s of places) {
+      if (await placeExists(s.name)) continue;
       const { error } = await supabase.from('places').insert({
         name: s.name,
         description: s.description ?? '',
@@ -341,32 +354,16 @@ function App() {
     setPlanningPlaces([]);
     setPlanningRouteName('');
     setPlanningRouteSaved(false);
-    setShowPlanningList(false);
+    setPreviewPlaces(null);
+    setSuggestionPlaces(null);
+    setSuggestionPreviewRoute(null);
   };
 
   if (!session) return <Auth />;
 
   return (
     <>
-    <div className="fixed inset-0 bg-spanish-bg flex flex-col p-4 gap-4 overflow-hidden">
-      {/* Header */}
-      <div className="flex justify-end items-center px-2 shrink-0">
-        <div className="flex items-center gap-3">
-          <Button size="icon" variant="neutral" onClick={() => setShowFavorites(true)} className="w-10 h-10 !p-1 shadow-none">
-            <Star size={26} className="text-spanish-orange" />
-          </Button>
-          <Button size="icon" variant="neutral" onClick={() => setDark(d => !d)} className="w-10 h-10 !p-1 shadow-none">
-            {dark ? <Sun size={22} className="text-spanish-orange" /> : <Moon size={22} className="text-gray-600 dark:text-gray-300" />}
-          </Button>
-          <button
-            onClick={() => setShowProfile(true)}
-            className="w-10 h-10 rounded-full bg-spanish-bg shadow-neu-flat border-2 border-white dark:border-gray-700 overflow-hidden active:shadow-neu-pressed transition-all"
-          >
-            <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${userProfile?.avatar_url ?? session.user.email}`} alt="Avatar" />
-          </button>
-        </div>
-      </div>
-
+    <div className="fixed inset-0 bg-spanish-bg flex flex-col overflow-hidden">
       {/* Main Content */}
       <div className="flex-1 relative overflow-hidden">
         <AnimatePresence mode="wait">
@@ -430,6 +427,9 @@ function App() {
                 focus={focus}
                 planningMode={planningMode}
                 planningPlaces={planningPlaces}
+                previewPlaces={previewPlaces ?? []}
+                suggestionPlaces={suggestionPlaces ?? []}
+                suggestionFitRequest={suggestionFitNonce}
               />
             </motion.div>
           ) : (
@@ -449,126 +449,6 @@ function App() {
           )}
         </AnimatePresence>
         
-        {/* Floating Actions */}
-        {planningMode ? (
-          <>
-            {/* Planning list panel */}
-            <AnimatePresence>
-              {showPlanningList && (
-                <motion.div
-                  initial={{ opacity: 0, y: 40 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 40 }}
-                  transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-                  className="absolute bottom-36 left-0 right-0 z-20 px-4"
-                >
-                  <div className="bg-spanish-bg dark:bg-gray-900 rounded-3xl shadow-xl overflow-hidden max-h-[55vh] flex flex-col">
-                    <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
-                      <span className="font-bold text-gray-800 dark:text-gray-100 text-sm">{planningRouteName || 'Trasa'}</span>
-                      <button onClick={() => setShowPlanningList(false)} className="w-7 h-7 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
-                        <X size={14} className="text-gray-500" />
-                      </button>
-                    </div>
-                    <div className="overflow-y-auto px-4 pb-4 flex flex-col gap-2">
-                      {planningPlaces.map((place, i) => (
-                        <div key={i} className="flex items-start gap-3 p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-neu-flat">
-                          <div className="w-6 h-6 rounded-full bg-spanish-orange/15 flex items-center justify-center shrink-0 mt-0.5">
-                            <span className="text-xs font-bold text-spanish-orange">{i + 1}</span>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-2">
-                              <span className="font-bold text-sm text-gray-800 dark:text-gray-100 leading-tight">{place.name}</span>
-                              <a
-                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.name)}&ll=${place.lat},${place.lng}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="shrink-0 flex items-center gap-1 text-xs text-blue-500 font-medium"
-                              >
-                                <ExternalLink size={11} />
-                                Maps
-                              </a>
-                            </div>
-                            {place.description && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{place.description}</p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2.5"
-            >
-              <div className="flex items-center gap-2.5">
-                <button
-                  onClick={() => setShowPlanningList(v => !v)}
-                  className={`flex items-center gap-2 px-4 py-3 rounded-full font-semibold text-sm shadow-xl active:scale-[0.97] transition-all ${
-                    showPlanningList
-                      ? 'bg-spanish-orange text-white'
-                      : 'bg-white/90 dark:bg-gray-800/90 backdrop-blur text-gray-700 dark:text-gray-200'
-                  }`}
-                >
-                  <List size={15} />
-                  Lista
-                </button>
-                {planningRouteSaved ? (
-                  <div className="flex items-center gap-1.5 px-4 py-3 rounded-full bg-green-500/90 backdrop-blur text-white text-sm font-semibold shadow-lg">
-                    <Check size={13} />
-                    Zapisano
-                  </div>
-                ) : (
-                  <button
-                    onClick={handleSavePlanningRoute}
-                    className="flex items-center gap-2 px-4 py-3 rounded-full bg-spanish-orange text-white font-bold text-sm shadow-xl active:scale-[0.97] transition-all"
-                  >
-                    <Bookmark size={15} />
-                    Zapisz trasę
-                  </button>
-                )}
-                <button
-                  onClick={exitPlanningMode}
-                  className="flex items-center gap-2 px-4 py-3 rounded-full bg-gray-800/90 dark:bg-gray-700/90 backdrop-blur text-white font-semibold text-sm shadow-xl active:scale-[0.97] transition-all"
-                >
-                  <X size={14} />
-                  Koniec
-                </button>
-              </div>
-            </motion.div>
-          </>
-        ) : (
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4 items-center z-20">
-            <Button
-              variant={view === 'map' ? 'primary' : 'neutral'}
-              size="icon"
-              className="w-14 h-14"
-              onClick={() => setView('map')}
-            >
-              <MapIcon size={24} />
-            </Button>
-            <Button
-              variant="primary"
-              size="icon"
-              className="w-16 h-16 shadow-lg"
-              onClick={() => setShowWizard(true)}
-            >
-              <Sparkles size={28} />
-            </Button>
-            <Button
-              variant={view === 'saved' ? 'primary' : 'neutral'}
-              size="icon"
-              className="w-14 h-14"
-              onClick={() => setView('saved')}
-            >
-              <List size={24} />
-            </Button>
-          </div>
-        )}
 
         {/* Trip Wizard (full-screen overlay, rendered via portal-like fixed positioning) */}
 
@@ -579,7 +459,7 @@ function App() {
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 100 }}
-              className="absolute bottom-28 left-0 right-0 flex justify-center z-30 px-4"
+              className="absolute bottom-4 left-0 right-0 flex justify-center z-30 px-4"
             >
               <DiscoveryCard
                 place={discoveryPlace}
@@ -596,11 +476,11 @@ function App() {
         {/* Detail Overlay */}
         <AnimatePresence>
           {selectedPlace && view === 'map' && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 100 }}
-              className="absolute bottom-28 left-0 right-0 flex justify-center z-10 px-4"
+              className="absolute bottom-4 left-0 right-0 flex justify-center z-10 px-4"
             >
               <LocationCard
                 place={selectedPlace}
@@ -626,12 +506,16 @@ function App() {
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 100 }}
-              className="absolute inset-x-0 bottom-28 z-30 px-4 flex justify-center"
+              className="absolute inset-x-0 bottom-4 z-30 px-4 flex justify-center"
             >
               <FavoritesList
                 favorites={favorites}
                 onClose={() => setShowFavorites(false)}
                 onRemove={handleRemoveFavorite}
+                onShowOnMap={(fav) => {
+                  setShowFavorites(false);
+                  setFocus({ lat: Number(fav.lat), lng: Number(fav.lng), nonce: Date.now() });
+                }}
               />
             </motion.div>
           )}
@@ -644,11 +528,13 @@ function App() {
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 100 }}
-              className="absolute inset-x-0 bottom-28 z-30 px-4 flex justify-center"
+              className="absolute inset-x-0 bottom-4 z-30 px-4 flex justify-center"
             >
               <ProfilePage
                 session={session}
                 userProfile={userProfile}
+                dark={dark}
+                onDarkToggle={() => setDark(d => !d)}
                 onClose={() => setShowProfile(false)}
                 onSignOut={() => { setShowProfile(false); supabase.auth.signOut(); }}
                 onAvatarChange={async (seed) => {
@@ -706,8 +592,116 @@ function App() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Return-to-suggestions floating button */}
+        <AnimatePresence>
+          {!showWizard && !planningMode && !!suggestionPreviewRoute && !!suggestionPlaces?.length && (
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 16 }}
+              className="absolute bottom-20 left-0 right-0 flex justify-center z-20 px-4 pointer-events-none"
+            >
+              <button
+                onClick={handleReturnToSuggestionsList}
+                className="pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/95 dark:bg-gray-800/95 backdrop-blur shadow-lg text-sm font-semibold text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 active:scale-[0.97] transition-all"
+              >
+                <span className="text-spanish-orange">✦</span>
+                Wróć do sugestii AI
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
+      {/* Bottom Bar */}
+      <AnimatePresence mode="wait">
+        {planningMode ? (
+          <motion.div
+            key="planning-bar"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="shrink-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-200/50 dark:border-gray-700/50 flex items-center justify-center gap-3 px-4 h-20"
+          >
+            <button
+              onClick={() => setShowWizard(true)}
+              className="flex items-center gap-2 px-4 py-3 rounded-full font-semibold text-sm shadow-xl active:scale-[0.97] transition-all bg-spanish-bg dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+            >
+              <List size={15} />
+              Lista
+            </button>
+            {planningRouteSaved ? (
+              <div className="flex items-center gap-1.5 px-4 py-3 rounded-full bg-green-500 text-white text-sm font-semibold shadow-lg">
+                <Check size={13} />
+                Zapisano
+              </div>
+            ) : (
+              <button
+                onClick={handleSavePlanningRoute}
+                className="flex items-center gap-2 px-4 py-3 rounded-full bg-spanish-orange text-white font-bold text-sm shadow-xl active:scale-[0.97] transition-all"
+              >
+                <Bookmark size={15} />
+                Zapisz trasę
+              </button>
+            )}
+            <button
+              onClick={exitPlanningMode}
+              className="flex items-center gap-2 px-4 py-3 rounded-full bg-gray-800 dark:bg-gray-700 text-white font-semibold text-sm shadow-xl active:scale-[0.97] transition-all"
+            >
+              <X size={14} />
+              Koniec
+            </button>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="nav-bar"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="shrink-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-200/50 dark:border-gray-700/50 flex items-center justify-around px-2 h-16"
+          >
+            <Button
+              variant={view === 'map' ? 'primary' : 'neutral'}
+              size="icon"
+              className="w-12 h-12"
+              onClick={() => setView('map')}
+            >
+              <MapIcon size={22} />
+            </Button>
+            <Button
+              variant="neutral"
+              size="icon"
+              className="w-12 h-12"
+              onClick={() => setShowFavorites(true)}
+            >
+              <Star size={22} className="text-spanish-orange" />
+            </Button>
+            <Button
+              variant="primary"
+              size="icon"
+              className="w-14 h-14 shadow-lg -mt-5"
+              onClick={() => setShowWizard(true)}
+            >
+              <Sparkles size={26} />
+            </Button>
+            <Button
+              variant={view === 'saved' ? 'primary' : 'neutral'}
+              size="icon"
+              className="w-12 h-12"
+              onClick={() => setView('saved')}
+            >
+              <List size={22} />
+            </Button>
+            <button
+              onClick={() => setShowProfile(true)}
+              className="w-11 h-11 rounded-full bg-spanish-bg shadow-neu-flat border-2 border-white dark:border-gray-700 overflow-hidden active:shadow-neu-pressed transition-all"
+            >
+              <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${userProfile?.avatar_url ?? session.user.email}`} alt="Avatar" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
 
     {/* Trip Wizard — fixed overlay outside the main layout stack */}
@@ -716,7 +710,21 @@ function App() {
         <TripWizard
           currentLocation={userLocation}
           onConfirm={(places, name, alreadySaved) => handleWizardConfirm(places, name, alreadySaved)}
-          onClose={() => setShowWizard(false)}
+          onClose={() => {
+            setShowWizard(false);
+            setSuggestionPreviewRoute(null);
+            setPreviewPlaces(null);
+            setSuggestionPlaces(null);
+          }}
+          initialRoute={
+            planningMode
+              ? { id: 'planning-current', name: planningRouteName || 'Aktualna trasa', places: planningPlaces, createdAt: new Date().toISOString(), pendingSuggestions: suggestionPreviewRoute?.pendingSuggestions }
+              : (suggestionPreviewRoute ?? undefined)
+          }
+          onRouteUpdate={planningMode ? (places) => setPlanningPlaces(places) : undefined}
+          onPreviewChange={(places) => setPreviewPlaces(places)}
+          onSuggestionsChange={(places) => setSuggestionPlaces(places)}
+          onShowSuggestionsOnMap={handleShowSuggestionsOnMap}
         />
       )}
     </AnimatePresence>

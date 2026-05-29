@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, LogOut, User, Crown, Mail, Pencil, Check } from 'lucide-react';
+import { X, LogOut, User, Crown, Mail, Pencil, Check, Moon, Sun } from 'lucide-react';
 import Card from './Card';
 import Button from './Button';
 
@@ -15,12 +15,14 @@ const avatarUrl = (seed: string) =>
 interface ProfilePageProps {
   session: any;
   userProfile: any;
+  dark: boolean;
+  onDarkToggle: () => void;
   onClose: () => void;
   onSignOut: () => void;
   onAvatarChange: (seed: string) => void;
 }
 
-const ProfilePage: React.FC<ProfilePageProps> = ({ session, userProfile, onClose, onSignOut, onAvatarChange }) => {
+const ProfilePage: React.FC<ProfilePageProps> = ({ session, userProfile, dark, onDarkToggle, onClose, onSignOut, onAvatarChange }) => {
   const email = session?.user?.email ?? '';
   const username = userProfile?.username ?? email.split('@')[0];
   const isAdmin = userProfile?.role === 'admin';
@@ -96,6 +98,21 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ session, userProfile, onClose
         <Mail size={16} className="text-gray-400 shrink-0" />
         <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{email}</p>
       </div>
+
+      <button
+        onClick={onDarkToggle}
+        className="flex items-center justify-between px-4 py-3 bg-white dark:bg-gray-700 rounded-2xl shadow-neu-flat active:shadow-neu-pressed transition-all"
+      >
+        <div className="flex items-center gap-3">
+          {dark ? <Moon size={16} className="text-spanish-orange" /> : <Sun size={16} className="text-spanish-orange" />}
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
+            {dark ? 'Tryb ciemny' : 'Tryb jasny'}
+          </span>
+        </div>
+        <div className={`w-10 h-6 rounded-full transition-colors flex items-center px-0.5 ${dark ? 'bg-spanish-orange' : 'bg-gray-300'}`}>
+          <div className={`w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${dark ? 'translate-x-4' : 'translate-x-0'}`} />
+        </div>
+      </button>
 
       <Button variant="neutral" onClick={onSignOut} className="flex items-center justify-center gap-2 text-spanish-red">
         <LogOut size={18} />
