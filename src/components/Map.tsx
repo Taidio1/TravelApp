@@ -58,6 +58,8 @@ interface MapProps {
   onLocate?: (lat: number, lng: number) => void;
   categoryFilter?: string;
   focus?: { lat: number; lng: number; nonce: number } | null;
+  planningMode?: boolean;
+  planningPlaces?: Array<{ name: string; lat: number; lng: number; category?: string }>;
 }
 
 const Map: React.FC<MapProps> = ({
@@ -68,6 +70,8 @@ const Map: React.FC<MapProps> = ({
   onLocate,
   categoryFilter = 'all',
   focus,
+  planningMode = false,
+  planningPlaces = [],
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
@@ -86,6 +90,10 @@ const Map: React.FC<MapProps> = ({
   onMarkerClickRef.current = onMarkerClick;
   onDiscoveryClickRef.current = onDiscoveryClick;
   onLocateRef.current = onLocate;
+
+  const planningOverlaysRef = useRef<any[]>([]);
+  const planningPolylineRef = useRef<any>(null);
+  const planningAbortRef = useRef(false);
 
   // discovery (auto-fetched nearby) places + the location they were fetched for
   const [discovery, setDiscovery] = useState<NearbyPlace[]>([]);
@@ -274,6 +282,8 @@ const Map: React.FC<MapProps> = ({
     overlaysRef.current.forEach((o: any) => o.setMap(null));
     overlaysRef.current = [];
 
+    if (planningMode) return;
+
     const g = (window as any).google.maps;
     const PinOverlay = getPinOverlayClass(g);
     const { lat: uLat, lng: uLng } = userPosRef.current;
@@ -358,7 +368,95 @@ const Map: React.FC<MapProps> = ({
       overlaysRef.current.forEach((o: any) => o.setMap(null));
       overlaysRef.current = [];
     };
-  }, [map, places, discovery, categoryFilter]);
+  }, [map, places, discovery, categoryFilter, planningMode]);
+
+  // Planning mode: sequential marker → line → marker → line animation
+  useEffect(() => {
+    if (!map || !planningMode || planningPlaces.length === 0) return;
+
+    const g = (window as any).google?.maps;
+    if (!g) return;
+
+    planningAbortRef.current = false;
+    const PinOverlay = getPinOverlayClass(g);
+
+    const polyline = new g.Polyline({
+      path: [],
+      geodesic: true,
+      strokeColor: '#FF8C00',
+      strokeOpacity: 0.9,
+      strokeWeight: 4,
+      map,
+    });
+    planningPolylineRef.current = polyline;
+
+    // Fit all planning places into view
+    const bounds = new g.LatLngBounds();
+    planningPlaces.forEach(p => bounds.extend(new g.LatLng(Number(p.lat), Number(p.lng))));
+    map.fitBounds(bounds, 80);
+
+    const run = async () => {
+      const committed: Array<{ lat: number; lng: number }> = [];
+
+      for (let i = 0; i < planningPlaces.length; i++) {
+        if (planningAbortRef.current) break;
+
+        const p = planningPlaces[i];
+        const latLng = { lat: Number(p.lat), lng: Number(p.lng) };
+
+        // Show numbered marker with bounce
+        const el = document.createElement('div');
+        el.className = 'planning-pin';
+        el.innerHTML = `<div class="planning-pin-bubble">${i + 1}</div><span class="planning-pin-stem"></span>`;
+        const overlay = new PinOverlay(new g.LatLng(latLng.lat, latLng.lng), el, () => {});
+        overlay.setMap(map);
+        planningOverlaysRef.current.push(overlay);
+
+        await new Promise(r => setTimeout(r, 420));
+        if (planningAbortRef.current) break;
+
+        // Animate polyline segment to next marker
+        if (i < planningPlaces.length - 1) {
+          const nextP = planningPlaces[i + 1];
+          const nextLatLng = { lat: Number(nextP.lat), lng: Number(nextP.lng) };
+          const base = [...committed, latLng];
+          const STEPS = 28;
+          let step = 0;
+
+          await new Promise<void>(resolve => {
+            const tick = () => {
+              if (planningAbortRef.current) { resolve(); return; }
+              step++;
+              const t = step / STEPS;
+              polyline.setPath([
+                ...base,
+                { lat: latLng.lat + (nextLatLng.lat - latLng.lat) * t,
+                  lng: latLng.lng + (nextLatLng.lng - latLng.lng) * t },
+              ]);
+              if (step < STEPS) requestAnimationFrame(tick);
+              else resolve();
+            };
+            requestAnimationFrame(tick);
+          });
+        }
+
+        committed.push(latLng);
+        polyline.setPath([...committed]);
+      }
+    };
+
+    run();
+
+    return () => {
+      planningAbortRef.current = true;
+      planningOverlaysRef.current.forEach(o => o.setMap(null));
+      planningOverlaysRef.current = [];
+      if (planningPolylineRef.current) {
+        planningPolylineRef.current.setMap(null);
+        planningPolylineRef.current = null;
+      }
+    };
+  }, [map, planningMode, planningPlaces]);
 
   return (
     <div className="relative w-full h-full rounded-[24px] overflow-hidden shadow-neu-flat">

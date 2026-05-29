@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Map from './components/Map';
 import LocationCard from './components/LocationCard';
-import AIAssistant from './components/AIAssistant';
+import TripWizard from './components/TripWizard';
 import SavedPlaces from './components/SavedPlaces';
 import DiscoveryCard from './components/DiscoveryCard';
 import type { DiscoveryPlace } from './components/DiscoveryCard';
@@ -12,7 +12,7 @@ import ProfilePage from './components/ProfilePage';
 import Auth from './components/Auth';
 import { useRealtime } from './hooks/useRealtime';
 import { supabase } from './lib/supabase';
-import { Sparkles, List, Map as MapIcon, Star, Moon, Sun, X } from 'lucide-react';
+import { Sparkles, List, Map as MapIcon, Star, Moon, Sun, X, Bookmark, Check, ExternalLink } from 'lucide-react';
 import Button from './components/Button';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useDarkMode } from './hooks/useDarkMode';
@@ -37,7 +37,12 @@ function App() {
   const rounds = useRealtime<any>('voting_rounds');
 
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
-  const [showAI, setShowAI] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
+  const [planningMode, setPlanningMode] = useState(false);
+  const [planningPlaces, setPlanningPlaces] = useState<any[]>([]);
+  const [planningRouteName, setPlanningRouteName] = useState('');
+  const [planningRouteSaved, setPlanningRouteSaved] = useState(false);
+  const [showPlanningList, setShowPlanningList] = useState(false);
   const [view, setView] = useState<'map' | 'saved'>('map');
   const [userProfile, setUserProfile] = useState<any>(null);
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
@@ -58,6 +63,16 @@ function App() {
     : activeFilter === 'must_have'
       ? places.filter((p: any) => p.status === 'approved')
       : places.filter((p: any) => p.category === activeFilter);
+
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => {},
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -282,12 +297,57 @@ function App() {
       });
       if (error) console.error('Place insert failed:', error.message, s);
     }
-    setShowAI(false);
+  };
+
+  const handleWizardConfirm = async (places: any[], name: string, alreadySaved = false) => {
+    setShowWizard(false);
+    setPlanningPlaces(places);
+    setPlanningMode(true);
+    setPlanningRouteName(name);
+    setPlanningRouteSaved(alreadySaved);
+    for (const s of places) {
+      const { error } = await supabase.from('places').insert({
+        name: s.name,
+        description: s.description ?? '',
+        category: s.category,
+        lat: s.lat,
+        lng: s.lng,
+        created_by: session.user.id,
+        ai_suggested: true,
+        status: 'proposed',
+      });
+      if (error) console.error('Place insert failed:', error.message, s);
+    }
+  };
+
+  const handleSavePlanningRoute = () => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('saved_routes') ?? '[]');
+      const route = {
+        id: crypto.randomUUID(),
+        name: planningRouteName || 'Moja trasa',
+        places: planningPlaces,
+        createdAt: new Date().toISOString(),
+      };
+      localStorage.setItem('saved_routes', JSON.stringify([route, ...existing].slice(0, 10)));
+      setPlanningRouteSaved(true);
+    } catch (e) {
+      console.error('Save route failed', e);
+    }
+  };
+
+  const exitPlanningMode = () => {
+    setPlanningMode(false);
+    setPlanningPlaces([]);
+    setPlanningRouteName('');
+    setPlanningRouteSaved(false);
+    setShowPlanningList(false);
   };
 
   if (!session) return <Auth />;
 
   return (
+    <>
     <div className="fixed inset-0 bg-spanish-bg flex flex-col p-4 gap-4 overflow-hidden">
       {/* Header */}
       <div className="flex justify-end items-center px-2 shrink-0">
@@ -368,6 +428,8 @@ function App() {
                 onDiscoveryClick={(p) => { setSelectedPlace(null); setDiscoveryPlace(p); }}
                 onLocate={(lat, lng) => setUserLocation({ lat, lng })}
                 focus={focus}
+                planningMode={planningMode}
+                planningPlaces={planningPlaces}
               />
             </motion.div>
           ) : (
@@ -388,49 +450,127 @@ function App() {
         </AnimatePresence>
         
         {/* Floating Actions */}
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4 items-center z-20">
-          <Button 
-            variant={view === 'map' ? 'primary' : 'neutral'} 
-            size="icon" 
-            className="w-14 h-14"
-            onClick={() => setView('map')}
-          >
-            <MapIcon size={24} />
-          </Button>
-          <Button 
-            variant="primary" 
-            size="icon" 
-            className="w-16 h-16 shadow-lg"
-            onClick={() => setShowAI(!showAI)}
-          >
-            <Sparkles size={28} />
-          </Button>
-          <Button 
-            variant={view === 'saved' ? 'primary' : 'neutral'} 
-            size="icon" 
-            className="w-14 h-14"
-            onClick={() => setView('saved')}
-          >
-            <List size={24} />
-          </Button>
-        </div>
+        {planningMode ? (
+          <>
+            {/* Planning list panel */}
+            <AnimatePresence>
+              {showPlanningList && (
+                <motion.div
+                  initial={{ opacity: 0, y: 40 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 40 }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                  className="absolute bottom-36 left-0 right-0 z-20 px-4"
+                >
+                  <div className="bg-spanish-bg dark:bg-gray-900 rounded-3xl shadow-xl overflow-hidden max-h-[55vh] flex flex-col">
+                    <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
+                      <span className="font-bold text-gray-800 dark:text-gray-100 text-sm">{planningRouteName || 'Trasa'}</span>
+                      <button onClick={() => setShowPlanningList(false)} className="w-7 h-7 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                        <X size={14} className="text-gray-500" />
+                      </button>
+                    </div>
+                    <div className="overflow-y-auto px-4 pb-4 flex flex-col gap-2">
+                      {planningPlaces.map((place, i) => (
+                        <div key={i} className="flex items-start gap-3 p-3 rounded-2xl bg-white dark:bg-gray-800 shadow-neu-flat">
+                          <div className="w-6 h-6 rounded-full bg-spanish-orange/15 flex items-center justify-center shrink-0 mt-0.5">
+                            <span className="text-xs font-bold text-spanish-orange">{i + 1}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="font-bold text-sm text-gray-800 dark:text-gray-100 leading-tight">{place.name}</span>
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.name)}&ll=${place.lat},${place.lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="shrink-0 flex items-center gap-1 text-xs text-blue-500 font-medium"
+                              >
+                                <ExternalLink size={11} />
+                                Maps
+                              </a>
+                            </div>
+                            {place.description && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{place.description}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-        {/* AI Assistant Overlay */}
-        <AnimatePresence>
-          {showAI && (
-            <motion.div 
-              initial={{ opacity: 0, y: 100 }}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 100 }}
-              className="absolute inset-x-0 bottom-28 z-30 px-4"
+              className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2.5"
             >
-              <AIAssistant
-                currentLocation={userLocation}
-                onSuggestions={handleAISuggestions}
-              />
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={() => setShowPlanningList(v => !v)}
+                  className={`flex items-center gap-2 px-4 py-3 rounded-full font-semibold text-sm shadow-xl active:scale-[0.97] transition-all ${
+                    showPlanningList
+                      ? 'bg-spanish-orange text-white'
+                      : 'bg-white/90 dark:bg-gray-800/90 backdrop-blur text-gray-700 dark:text-gray-200'
+                  }`}
+                >
+                  <List size={15} />
+                  Lista
+                </button>
+                {planningRouteSaved ? (
+                  <div className="flex items-center gap-1.5 px-4 py-3 rounded-full bg-green-500/90 backdrop-blur text-white text-sm font-semibold shadow-lg">
+                    <Check size={13} />
+                    Zapisano
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleSavePlanningRoute}
+                    className="flex items-center gap-2 px-4 py-3 rounded-full bg-spanish-orange text-white font-bold text-sm shadow-xl active:scale-[0.97] transition-all"
+                  >
+                    <Bookmark size={15} />
+                    Zapisz trasę
+                  </button>
+                )}
+                <button
+                  onClick={exitPlanningMode}
+                  className="flex items-center gap-2 px-4 py-3 rounded-full bg-gray-800/90 dark:bg-gray-700/90 backdrop-blur text-white font-semibold text-sm shadow-xl active:scale-[0.97] transition-all"
+                >
+                  <X size={14} />
+                  Koniec
+                </button>
+              </div>
             </motion.div>
-          )}
-        </AnimatePresence>
+          </>
+        ) : (
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4 items-center z-20">
+            <Button
+              variant={view === 'map' ? 'primary' : 'neutral'}
+              size="icon"
+              className="w-14 h-14"
+              onClick={() => setView('map')}
+            >
+              <MapIcon size={24} />
+            </Button>
+            <Button
+              variant="primary"
+              size="icon"
+              className="w-16 h-16 shadow-lg"
+              onClick={() => setShowWizard(true)}
+            >
+              <Sparkles size={28} />
+            </Button>
+            <Button
+              variant={view === 'saved' ? 'primary' : 'neutral'}
+              size="icon"
+              className="w-14 h-14"
+              onClick={() => setView('saved')}
+            >
+              <List size={24} />
+            </Button>
+          </div>
+        )}
+
+        {/* Trip Wizard (full-screen overlay, rendered via portal-like fixed positioning) */}
 
         {/* Discovery preview Overlay */}
         <AnimatePresence>
@@ -569,6 +709,18 @@ function App() {
       </div>
 
     </div>
+
+    {/* Trip Wizard — fixed overlay outside the main layout stack */}
+    <AnimatePresence>
+      {showWizard && (
+        <TripWizard
+          currentLocation={userLocation}
+          onConfirm={(places, name, alreadySaved) => handleWizardConfirm(places, name, alreadySaved)}
+          onClose={() => setShowWizard(false)}
+        />
+      )}
+    </AnimatePresence>
+    </>
   );
 }
 
