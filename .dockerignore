@@ -10,6 +10,9 @@ dist-ssr
 .idea
 .claude
 
+# TLS cert/key are mounted as a runtime volume, never baked into the image
+certs
+
 # Docs / data not needed to build the frontend
 docs
 supabase

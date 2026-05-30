@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 .env
+
+# TLS certificate + private key (mounted into Caddy at runtime, never committed)
+certs/

@@ -11,7 +11,9 @@ services:
       # Plain HTTP for the mikr.us Cytrus subdomain proxy (point Cytrus here).
       - "8080:8080"
     volumes:
-      # Persist Let's Encrypt certs/config across restarts (rate limits!).
+      # Provider-issued TLS cert (fullchain.pem + privkey.pem) mounted read-only.
+      - ./certs:/etc/caddy/certs:ro
+      # Persist Caddy data/config across restarts.
       - caddy_data:/data
       - caddy_config:/config
 
