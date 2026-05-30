@@ -6,9 +6,9 @@
 	auto_https disable_redirects
 }
 
-# Replace travel.tojest.dev with your real mikr.us subdomain. Its DNS A record
-# must point to this VPS's IP, or Caddy will keep retrying the certificate.
-zwiedzamtu.pl, travel.tojest.dev {
+# DNS A record for this domain must point to this VPS's IP, or Caddy will keep
+# retrying the certificate.
+zwiedzamtu.pl {
 	root * /srv
 	encode zstd gzip
 
