@@ -570,7 +570,7 @@ function App() {
               <div className="absolute top-4 left-0 right-0 z-10 px-4 flex flex-col gap-2">
                 {/* City search bar */}
                 <div className="flex items-center gap-2">
-                  <div className="flex-1 flex items-center gap-2 bg-white/95 dark:bg-gray-800/95 backdrop-blur rounded-2xl shadow-neu-flat px-3 h-10">
+                  <div className="flex-1 flex items-center gap-2 bg-white/95 dark:bg-gray-800/95 backdrop-blur rounded-2xl px-3 h-10">
                     <Search size={15} className="text-gray-400 shrink-0" />
                     <input
                       type="text"
@@ -595,7 +595,7 @@ function App() {
                   {!isLiveLocation && (
                     <button
                       onClick={resetToLiveLocation}
-                      className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-gray-800/95 backdrop-blur shadow-neu-flat flex items-center justify-center shrink-0"
+                      className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-gray-800/95 backdrop-blur flex items-center justify-center shrink-0"
                       title="Wróć do mojej lokalizacji"
                     >
                       <Navigation size={16} className="text-spanish-orange" />
@@ -637,7 +637,7 @@ function App() {
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all ${
                         activeFilter === f.id
                           ? 'bg-spanish-orange text-white shadow-lg scale-105'
-                          : 'bg-white/90 dark:bg-gray-700/90 backdrop-blur text-gray-600 dark:text-gray-300 shadow-neu-flat'
+                          : 'bg-white/90 dark:bg-gray-700/90 backdrop-blur text-gray-600 dark:text-gray-300'
                       }`}
                     >
                       <span>{f.emoji}</span>
