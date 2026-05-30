@@ -1,40 +1,14 @@
-{
-	# Used by Let's Encrypt for expiry notices.
-	email kkacper15@gmail.com
-
-	# Another app (verum) owns host port 80, so never bind/redirect on it.
-	auto_https disable_redirects
-}
-
-# DNS A record for this domain must point to this VPS's IP, or Caddy will keep
-# retrying the certificate.
-zwiedzamtu.pl {
-	root * /srv
-	encode zstd gzip
-
-	# Single-page app: fall back to index.html for client-side routes.
-	try_files {path} /index.html
-	file_server
-
-	# Use the certificate files supplied by the domain provider instead of
-	# Let's Encrypt (ACME TLS-ALPN-01 kept failing on this mikr.us VPS).
-	# fullchain.pem = leaf cert + intermediate/root chain; privkey.pem = key.
-	# Mounted read-only via docker-compose (./certs -> /etc/caddy/certs).
-	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
-}
-
-# Plain HTTP for the mikr.us "Cytrus" subdomain proxy. Cytrus terminates
-# HTTPS on its side and forwards to this internal port — no cert here.
-# Has no hostname, so Caddy serves any Host and skips auto-HTTPS.
+# The mikr.us edge nginx terminates TLS (auto Let's Encrypt) and reverse-proxies
+# plain HTTP to this container, so Caddy never handles certificates itself —
+# it just serves the static SPA over HTTP. No hostname block / no `tls` needed.
 :8080 {
 	root * /srv
 	encode zstd gzip
 
-	# mikr.us terminates TLS at its edge and proxies plain HTTP here, passing
-	# the original scheme in X-Forwarded-Proto. Visitors who arrived over HTTP
-	# get bounced to HTTPS — Chrome auto-upgrades the address bar to https on
-	# its own, but Safari/Opera don't, so without this they load over plain
-	# HTTP and the browser shows "Not secure".
+	# The edge passes the original scheme in X-Forwarded-Proto. Visitors who
+	# arrived over HTTP get bounced to HTTPS — Chrome auto-upgrades the address
+	# bar on its own, but Safari/Opera don't, so without this they load over
+	# plain HTTP and the browser shows "Not secure".
 	@http header X-Forwarded-Proto http
 	redir @http https://{host}{uri}
 
@@ -42,6 +16,7 @@ zwiedzamtu.pl {
 	# header rides the HTTPS response the client gets back through the edge.
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
+	# Single-page app: fall back to index.html for client-side routes.
 	try_files {path} /index.html
 	file_server
 }

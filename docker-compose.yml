@@ -5,18 +5,8 @@ services:
     container_name: zwiedzamtu-frontend
     restart: unless-stopped
     ports:
-      # Only 443 — port 80 stays with verum. UDP 443 enables HTTP/3.
-      - "443:443"
-      - "443:443/udp"
-      # Plain HTTP for the mikr.us Cytrus subdomain proxy (point Cytrus here).
+      # The mikr.us edge terminates HTTPS and proxies to this plain-HTTP port.
+      # Caddy no longer handles TLS, so the 443 mappings and the ./certs mount
+      # (provider cert from nazwa.pl) are gone — they were never in the request
+      # path.
       - "8080:8080"
-    volumes:
-      # Provider-issued TLS cert (fullchain.pem + privkey.pem) mounted read-only.
-      - ./certs:/etc/caddy/certs:ro
-      # Persist Caddy data/config across restarts.
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
