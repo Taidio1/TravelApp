@@ -29,6 +29,19 @@ zwiedzamtu.pl {
 :8080 {
 	root * /srv
 	encode zstd gzip
+
+	# mikr.us terminates TLS at its edge and proxies plain HTTP here, passing
+	# the original scheme in X-Forwarded-Proto. Visitors who arrived over HTTP
+	# get bounced to HTTPS — Chrome auto-upgrades the address bar to https on
+	# its own, but Safari/Opera don't, so without this they load over plain
+	# HTTP and the browser shows "Not secure".
+	@http header X-Forwarded-Proto http
+	redir @http https://{host}{uri}
+
+	# Once a visitor has been served over HTTPS, force HTTPS for a year. The
+	# header rides the HTTPS response the client gets back through the edge.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
 	try_files {path} /index.html
 	file_server
 }
